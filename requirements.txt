@@ -1,0 +1,31 @@
+fastapi
+uvicorn[standard]
+pydantic
+python-dotenv
+
+# --- LangChain / LangGraph ---
+langchain
+langchain-core
+langchain-text-splitters
+langchain-openai
+langchain-huggingface
+langchain-chroma
+langchain-community
+langgraph
+
+# --- LLM client (talks to vLLM's OpenAI-compatible endpoint) ---
+openai
+
+# --- Embeddings backend used by HuggingFaceEmbeddings ---
+sentence-transformers
+rank_bm25
+
+# --- PDF parsing + layout/figure/table extraction (ingest.py) ---
+pymupdf
+doclayout-yolo
+pillow
+
+streamlit
+requests
+
+
