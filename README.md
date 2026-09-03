@@ -235,31 +235,53 @@ Response:
 
 ---
 
-## 6. Benchmark (Part A)
+## 6. Benchmark 
+python3 benchmark.py \
+  --base-url http://127.0.0.1:8000/v1 \
+  --model Qwen/Qwen2.5-VL-7B-Instruct-AWQ \
+  --concurrency 20 50 \
+  --requests-per-level 40 \
+  --max-tokens 256
+[2026-09-03 23:27:58] ======================================================================
+[2026-09-03 23:27:58] vLLM BENCHMARK
+[2026-09-03 23:27:58] [CONFIG] base_url          : http://127.0.0.1:8000/v1
+[2026-09-03 23:27:58] [CONFIG] model             : Qwen/Qwen2.5-VL-7B-Instruct-AWQ
+[2026-09-03 23:27:58] [CONFIG] concurrency levels: [20, 50]
+[2026-09-03 23:27:58] [CONFIG] requests/level    : 40
+[2026-09-03 23:27:58] [CONFIG] max_tokens        : 256
+[2026-09-03 23:27:58] ======================================================================
+[2026-09-03 23:27:58] ======================================================================
+[2026-09-03 23:27:58] [LEVEL] concurrency=20 requests=40
+[2026-09-03 23:27:58] ======================================================================
+[2026-09-03 23:27:58] [WARMUP] Sending 1 untimed warm-up request...
+[2026-09-03 23:28:03] [WARMUP] Done.
+[2026-09-03 23:28:11] [LEVEL] complete | ok=40/40 | wall_time=7.93s
+[2026-09-03 23:28:11] ======================================================================
+[2026-09-03 23:28:11] [LEVEL] concurrency=50 requests=40
+[2026-09-03 23:28:11] ======================================================================
+[2026-09-03 23:28:11] [WARMUP] Sending 1 untimed warm-up request...
+[2026-09-03 23:28:16] [WARMUP] Done.
+[2026-09-03 23:28:22] [LEVEL] complete | ok=40/40 | wall_time=5.78s
 
-Run `benchmark.py` against the running vLLM server and paste its markdown output below:
+=========================================================================
+BENCHMARK SUMMARY
+=========================================================================
+Concurrency  Req/s  Tok/s  TTFT p50  TTFT p95  Lat p50  Lat p95  Errors
+-------------------------------------------------------------------------
+20           5.04   655.8  81ms      231ms     2.00s    5.88s    0/40
+50           6.92   915.2  171ms     182ms     2.12s    5.77s    0/40
+=========================================================================
 
-```bash
-python benchmark.py --base-url http://localhost:8000/v1 --model Qwen/Qwen2.5-VL-7B-Instruct-AWQ
-```
-
-It sweeps concurrency levels 1 / 10 / 20 / 50 by default, using a mix of short questions and long RAG-style context prompts, and reports requests/sec, aggregate output tokens/sec, TTFT (p50/p95/p99), and end-to-end latency (p50/p95/p99). Results are written to `benchmark_results.md` (ready to paste here) and `benchmark_results.json` (raw numbers).
-
-<!--
-Paste the contents of benchmark_results.md here after running it on the
-target hardware. Example shape:
+[2026-09-03 23:28:22] [OUTPUT] JSON written to benchmark_results.json
+[2026-09-03 23:28:22] [OUTPUT] Markdown table written to benchmark_results.md
+[2026-09-03 23:28:22] [OUTPUT] Paste this file's contents directly into the README benchmark section.
 
 ### vLLM Benchmark — `Qwen/Qwen2.5-VL-7B-Instruct-AWQ`
 
 | Concurrency | Req/s | Output tok/s | TTFT (p50) | TTFT (p95) | Latency (p50) | Latency (p95) | Errors |
 |---|---|---|---|---|---|---|---|
-| 1  | ... | ... | ... ms | ... ms | ... s | ... s | 0/40 |
-| 10 | ... | ... | ... ms | ... ms | ... s | ... s | 0/40 |
-| 20 | ... | ... | ... ms | ... ms | ... s | ... s | 0/40 |
-| 50 | ... | ... | ... ms | ... ms | ... s | ... s | 0/40 |
--->
-
-**[Benchmark numbers to be filled in after running against the deployment GPU — not fabricated here.]**
+| 20 | 5.04 | 655.8 | 81 ms | 231 ms | 2.00 s | 5.88 s | 0/40 |
+| 50 | 6.92 | 915.2 | 171 ms | 182 ms | 2.12 s | 5.77 s | 0/40 |ubuntu@jl-vm-496569:~/Doc_intelligent_system$
 
 ---
 

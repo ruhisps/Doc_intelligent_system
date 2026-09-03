@@ -229,12 +229,24 @@ RESEARCH_PAPER:
 Questions about research papers, their
 methods, experiments, datasets, results,
 limitations, findings, related work, etc.
+This also includes questions asking to define,
+explain, or describe a technical term, concept,
+model, or method that could plausibly appear in
+a research paper (e.g. "what is RAG", "what is
+BERT", "explain attention mechanisms") - even if
+phrased as a simple question.
+
+Examples:
+- What is RAG?
+- What is BERT?
+- Explain how attention works.
+- What methods did this paper use?
 
 
 GENERAL:
 Simple conversation or chit chat questions
-that do not require the research-paper corpus.
-ANything which is technical even if you know should not be categorised as GENERAL
+that do not require the research-paper corpus
+and are not about any technical/research concept.
 
 Examples:
 - Hello
@@ -244,7 +256,8 @@ Examples:
 
 OUT_OF_SCOPE:
 Requests unrelated to this research-paper
-question answering system.
+question answering system, and not a technical
+or research-related question.
 
 Examples:
 - Write a game.
@@ -978,5 +991,3 @@ if __name__ == "__main__":
         if docs:
             legend = build_citation_legend(docs)
             print_citations_used(answer, legend)
-
-
