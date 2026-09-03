@@ -1,6 +1,29 @@
+"""
+ingestion.py
+
+Offline ingestion pipeline — run once (or whenever the
+document set changes) to build the knowledge base the API queries.
+
+For every PDF in DATA_DIR, this script:
+    1. Extracts page text with PyMuPDF and splits it into overlapping
+       chunks (RecursiveCharacterTextSplitter).
+    2. Detects figures/tables per page with DocLayout-YOLO, crops them,
+       and saves the crops to VISUALS_DIR.
+    3. Sends each cropped figure/table to a vision-language model
+       served via vLLM (Qwen2.5-VL) to generate a rich text description
+    4. Embeds every text chunk and visual description with a
+       sentence-transformers model and writes everything into a
+       persisted Chroma collection, alongside the metadata (source,
+       page, content_type, citation, image_path, ...) that api.py and
+       rag.py rely on to produce grounded, page-accurate citations.
+
+Run with:
+    python ingestion.py
+    docker compose --profile ingest run --rm ingest
+"""
+
 import os
 import io
-import json
 import uuid
 import base64
 import time
@@ -28,7 +51,6 @@ from langchain_chroma import Chroma
 
 import cv2
 
-
 # ============================================================
 # THREAD / CPU CONFIG
 # ============================================================
@@ -38,10 +60,10 @@ torch.set_num_threads(1)
 
 load_dotenv()
 
-
 # ============================================================
 # DEBUG / TIMING HELPERS
 # ============================================================
+
 
 def log(message):
     """
@@ -51,11 +73,7 @@ def log(message):
     terminals, nohup, VSCode, etc.
     """
     timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-
-    print(
-        f"[{timestamp}] {message}",
-        flush=True,
-    )
+    print(f"[{timestamp}] {message}", flush=True)
 
 
 def log_exception(prefix):
@@ -78,37 +96,23 @@ def elapsed(start):
 # ============================================================
 
 DATA_DIR = "data"
-
 CHROMA_DIR = "chroma_db"
-
 COLLECTION_NAME = "research_papers"
-
 VISUALS_DIR = "extracted_visuals"
 
-EMBEDDING_MODEL = (
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
-
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # ============================================================
 # DOCLAYOUT-YOLO SETTINGS
 # ============================================================
 
-DOCLAYOUT_REPO_ID = (
-    "juliozhao/DocLayout-YOLO-DocStructBench"
-)
-
-DOCLAYOUT_FILENAME = (
-    "doclayout_yolo_docstructbench_imgsz1024.pt"
-)
-
+DOCLAYOUT_REPO_ID = "juliozhao/DocLayout-YOLO-DocStructBench"
+DOCLAYOUT_FILENAME = "doclayout_yolo_docstructbench_imgsz1024.pt"
 DOCLAYOUT_IMGSZ = 1024
-
 CONFIDENCE_THRESHOLD = 0.25
 
 # Number of PDF pages sent to YOLO at once
 YOLO_BATCH_SIZE = 8
-
 
 # ============================================================
 # VLM SETTINGS
@@ -116,7 +120,6 @@ YOLO_BATCH_SIZE = 8
 
 # Number of simultaneous VLM requests
 VLM_MAX_WORKERS = 4
-
 
 # ============================================================
 # VISUAL EXTRACTION SETTINGS
@@ -129,47 +132,23 @@ VISUAL_LABELS = {
 
 MIN_BOX_SIDE = 50
 
-
 # ============================================================
 # DEVICE
 # ============================================================
 
-DEVICE = (
-    "cuda"
-    if torch.cuda.is_available()
-    else "cpu"
-)
-
+DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
 log("=" * 80)
 log("APPLICATION STARTING")
 log("=" * 80)
-
 log(f"[DEVICE] {DEVICE}")
 
 if DEVICE == "cuda":
-
-    log(
-        f"[CUDA] Device count: "
-        f"{torch.cuda.device_count()}"
-    )
-
-    log(
-        f"[CUDA] Device name: "
-        f"{torch.cuda.get_device_name(0)}"
-    )
-
-    log(
-        f"[CUDA] PyTorch CUDA version: "
-        f"{torch.version.cuda}"
-    )
-
+    log(f"[CUDA] Device count: {torch.cuda.device_count()}")
+    log(f"[CUDA] Device name: {torch.cuda.get_device_name(0)}")
+    log(f"[CUDA] PyTorch CUDA version: {torch.version.cuda}")
 else:
-
-    log(
-        "[CPU] Running inference on CPU"
-    )
-
+    log("[CPU] Running inference on CPU")
 
 # ============================================================
 # VLLM CONFIG
@@ -190,14 +169,12 @@ VLLM_API_KEY = os.getenv(
     "EMPTY",
 )
 
-
 log("=" * 80)
 log("[VLLM] Configuration")
 log(f"[VLLM] Base URL : {VLLM_BASE_URL}")
 log(f"[VLLM] Model    : {VLLM_MODEL}")
 log(f"[VLLM] Workers  : {VLM_MAX_WORKERS}")
 log("=" * 80)
-
 
 # ============================================================
 # VLLM CLIENT
@@ -208,7 +185,6 @@ log("[VLLM] Initializing ChatOpenAI client...")
 vllm_client_start = time.perf_counter()
 
 try:
-
     llm = ChatOpenAI(
         model=VLLM_MODEL,
         api_key=VLLM_API_KEY,
@@ -222,13 +198,8 @@ try:
     )
 
 except Exception:
-
-    log_exception(
-        "[VLLM ERROR] Failed to initialize client"
-    )
-
+    log_exception("[VLLM ERROR] Failed to initialize client")
     raise
-
 
 # ============================================================
 # EMBEDDINGS
@@ -243,15 +214,10 @@ log("=" * 80)
 embedding_start = time.perf_counter()
 
 try:
-
     embeddings = HuggingFaceEmbeddings(
         model_name=EMBEDDING_MODEL,
-        model_kwargs={
-            "device": DEVICE
-        },
-        encode_kwargs={
-            "normalize_embeddings": True
-        },
+        model_kwargs={"device": DEVICE},
+        encode_kwargs={"normalize_embeddings": True},
     )
 
     log(
@@ -260,14 +226,8 @@ try:
     )
 
 except Exception:
-
-    log_exception(
-        "[EMBEDDINGS ERROR] "
-        "Failed to initialize embeddings"
-    )
-
+    log_exception("[EMBEDDINGS ERROR] Failed to initialize embeddings")
     raise
-
 
 # ============================================================
 # CHROMA
@@ -282,7 +242,6 @@ log("=" * 80)
 chroma_init_start = time.perf_counter()
 
 try:
-
     vectorstore = Chroma(
         collection_name=COLLECTION_NAME,
         persist_directory=CHROMA_DIR,
@@ -295,14 +254,8 @@ try:
     )
 
 except Exception:
-
-    log_exception(
-        "[CHROMA ERROR] "
-        "Failed to initialize vector store"
-    )
-
+    log_exception("[CHROMA ERROR] Failed to initialize vector store")
     raise
-
 
 # ============================================================
 # TEXT SPLITTER
@@ -322,13 +275,16 @@ text_splitter = RecursiveCharacterTextSplitter(
 
 log("[TEXT] Text splitter initialized")
 
-
 # ============================================================
 # LOAD DOCLAYOUT-YOLO
 # ============================================================
 
-def load_layout_model():
 
+def load_layout_model():
+    """
+    Download (if needed) and load the DocLayout-YOLO weights used to
+    detect figure/table regions on each rendered PDF page.
+    """
     log("=" * 80)
     log("[YOLO] Loading DocLayout-YOLO")
     log(f"[YOLO] Repository: {DOCLAYOUT_REPO_ID}")
@@ -338,14 +294,7 @@ def load_layout_model():
     model_start = time.perf_counter()
 
     try:
-
-        # ----------------------------------------------------
-        # Download / locate weights
-        # ----------------------------------------------------
-
-        log(
-            "[YOLO] Calling hf_hub_download()..."
-        )
+        log("[YOLO] Calling hf_hub_download()...")
 
         download_start = time.perf_counter()
 
@@ -358,30 +307,18 @@ def load_layout_model():
             "[YOLO] Weights ready "
             f"| elapsed={elapsed(download_start):.3f}s"
         )
+        log(f"[YOLO] Weights path: {weights_path}")
 
-        log(
-            f"[YOLO] Weights path: {weights_path}"
-        )
-
-        # ----------------------------------------------------
-        # Load model
-        # ----------------------------------------------------
-
-        log(
-            "[YOLO] Creating YOLOv10 model..."
-        )
+        log("[YOLO] Creating YOLOv10 model...")
 
         load_start = time.perf_counter()
 
-        model = YOLOv10(
-            weights_path
-        )
+        model = YOLOv10(weights_path)
 
         log(
             "[YOLO] YOLOv10 model created "
             f"| elapsed={elapsed(load_start):.3f}s"
         )
-
         log(
             "[YOLO] TOTAL model loading time "
             f"| elapsed={elapsed(model_start):.3f}s"
@@ -390,30 +327,23 @@ def load_layout_model():
         return model
 
     except Exception:
-
-        log_exception(
-            "[YOLO ERROR] Model loading failed"
-        )
-
+        log_exception("[YOLO ERROR] Model loading failed")
         raise
 
 
 layout_model = load_layout_model()
 
-
 # ============================================================
 # RENDER PDF PAGE
 # ============================================================
 
-def render_page(
-    page,
-    scale=2.0,
-):
 
-    matrix = pymupdf.Matrix(
-        scale,
-        scale,
-    )
+def render_page(page, scale=2.0):
+    """
+    Rasterize one PyMuPDF page to a PIL Image at the given scale
+    (2.0 = ~144 DPI), so DocLayout-YOLO can run object detection on it.
+    """
+    matrix = pymupdf.Matrix(scale, scale)
 
     pix = page.get_pixmap(
         matrix=matrix,
@@ -433,66 +363,35 @@ def render_page(
 # YOLO RESULT PARSING
 # ============================================================
 
-def _parse_result(
-    image,
-    result,
-):
 
+def _parse_result(image, result):
+    """
+    Convert one YOLO result into a list of filtered detections: keeps
+    only "figure"/"table" classes above CONFIDENCE_THRESHOLD and at
+    least MIN_BOX_SIDE pixels wide/tall, clamped to the image bounds.
+    """
     names = result.names
-
     detections = []
 
     for box in result.boxes:
-
-        class_id = int(
-            box.cls[0]
-        )
-
+        class_id = int(box.cls[0])
         raw_label = names[class_id]
 
         if raw_label not in VISUAL_LABELS:
             continue
 
-        x1, y1, x2, y2 = (
-            box.xyxy[0].tolist()
-        )
+        x1, y1, x2, y2 = box.xyxy[0].tolist()
+        score = float(box.conf[0])
 
-        score = float(
-            box.conf[0]
-        )
+        x1 = max(0, min(x1, image.width))
+        y1 = max(0, min(y1, image.height))
+        x2 = max(0, min(x2, image.width))
+        y2 = max(0, min(y2, image.height))
 
-        x1 = max(
-            0,
-            min(x1, image.width)
-        )
-
-        y1 = max(
-            0,
-            min(y1, image.height)
-        )
-
-        x2 = max(
-            0,
-            min(x2, image.width)
-        )
-
-        y2 = max(
-            0,
-            min(y2, image.height)
-        )
-
-        if (
-            (x2 - x1) < MIN_BOX_SIDE
-            or
-            (y2 - y1) < MIN_BOX_SIDE
-        ):
+        if (x2 - x1) < MIN_BOX_SIDE or (y2 - y1) < MIN_BOX_SIDE:
             continue
 
-        label = (
-            "Picture"
-            if raw_label == "figure"
-            else "Table"
-        )
+        label = "Picture" if raw_label == "figure" else "Table"
 
         detections.append(
             {
@@ -515,10 +414,13 @@ def _parse_result(
 # YOLO INFERENCE
 # ============================================================
 
-def detect_visuals_batch(
-    images
-):
 
+def detect_visuals_batch(images):
+    """
+    Run DocLayout-YOLO over all rendered pages in batches of
+    YOLO_BATCH_SIZE, returning one detections list per page (parallel
+    to `images`) of the figure/table bounding boxes found on it.
+    """
     log("=" * 80)
     log("[YOLO] STARTING VISUAL DETECTION")
     log(f"[YOLO] Pages       : {len(images)}")
@@ -529,90 +431,40 @@ def detect_visuals_batch(
     log("=" * 80)
 
     all_detections = []
-
-    is_cpu = (
-        DEVICE == "cpu"
-    )
+    is_cpu = DEVICE == "cpu"
 
     total_batches = (
-        len(images)
-        + YOLO_BATCH_SIZE
-        - 1
+        len(images) + YOLO_BATCH_SIZE - 1
     ) // YOLO_BATCH_SIZE
 
     total_inference_time = 0.0
-
     total_parse_time = 0.0
 
-    # --------------------------------------------------------
-    # BATCH LOOP
-    # --------------------------------------------------------
-
     for batch_index, batch_start in enumerate(
-        range(
-            0,
-            len(images),
-            YOLO_BATCH_SIZE,
-        ),
+        range(0, len(images), YOLO_BATCH_SIZE),
         start=1,
     ):
-
         batch = images[
-            batch_start:
-            batch_start + YOLO_BATCH_SIZE
+            batch_start:batch_start + YOLO_BATCH_SIZE
         ]
 
-        batch_end = (
-            batch_start
-            + len(batch)
-        )
+        batch_end = batch_start + len(batch)
 
         log("")
         log("-" * 70)
-
-        log(
-            f"[YOLO] BATCH "
-            f"{batch_index}/{total_batches}"
-        )
-
-        log(
-            f"[YOLO] Pages: "
-            f"{batch_start + 1}-"
-            f"{batch_end}"
-        )
-
-        log(
-            f"[YOLO] Batch size: "
-            f"{len(batch)}"
-        )
-
-        # ----------------------------------------------------
-        # GPU SYNC BEFORE INFERENCE
-        # ----------------------------------------------------
+        log(f"[YOLO] BATCH {batch_index}/{total_batches}")
+        log(f"[YOLO] Pages: {batch_start + 1}-{batch_end}")
+        log(f"[YOLO] Batch size: {len(batch)}")
 
         if DEVICE == "cuda":
-
-            log(
-                "[YOLO] CUDA synchronize "
-                "BEFORE inference..."
-            )
-
+            log("[YOLO] CUDA synchronize BEFORE inference...")
             torch.cuda.synchronize()
 
-        # ----------------------------------------------------
-        # INFERENCE START
-        # ----------------------------------------------------
+        log("[YOLO] >>> INFERENCE START")
 
-        log(
-            "[YOLO] >>> INFERENCE START"
-        )
-
-        inference_start = (
-            time.perf_counter()
-        )
+        inference_start = time.perf_counter()
 
         try:
-
             results = layout_model.predict(
                 batch,
                 imgsz=DOCLAYOUT_IMGSZ,
@@ -623,157 +475,70 @@ def detect_visuals_batch(
             )
 
         except Exception:
-
             log_exception(
-                f"[YOLO ERROR] "
-                f"Inference failed "
-                f"for pages "
-                f"{batch_start + 1}-"
-                f"{batch_end}"
+                f"[YOLO ERROR] Inference failed "
+                f"for pages {batch_start + 1}-{batch_end}"
             )
-
             raise
 
-        # ----------------------------------------------------
-        # GPU SYNC AFTER INFERENCE
-        # ----------------------------------------------------
-
         if DEVICE == "cuda":
-
-            log(
-                "[YOLO] CUDA synchronize "
-                "AFTER inference..."
-            )
-
+            log("[YOLO] CUDA synchronize AFTER inference...")
             torch.cuda.synchronize()
 
-        # ----------------------------------------------------
-        # INFERENCE END
-        # ----------------------------------------------------
+        inference_time = time.perf_counter() - inference_start
+        total_inference_time += inference_time
 
-        inference_time = (
-            time.perf_counter()
-            - inference_start
-        )
-
-        total_inference_time += (
-            inference_time
-        )
-
-        avg_per_page = (
-            inference_time
-            / len(batch)
-        )
-
+        avg_per_page = inference_time / len(batch)
         throughput = (
-            len(batch)
-            / inference_time
+            len(batch) / inference_time
             if inference_time > 0
             else 0
         )
 
-        log(
-            "[YOLO] <<< INFERENCE END"
-        )
+        log("[YOLO] <<< INFERENCE END")
+        log(f"[YOLO] Inference time : {inference_time:.3f}s")
+        log(f"[YOLO] Avg/page       : {avg_per_page:.3f}s")
+        log(f"[YOLO] Throughput     : {throughput:.2f} pages/s")
 
-        log(
-            f"[YOLO] Inference time : "
-            f"{inference_time:.3f}s"
-        )
+        log("[YOLO] Starting result parsing...")
 
-        log(
-            f"[YOLO] Avg/page       : "
-            f"{avg_per_page:.3f}s"
-        )
+        parse_start = time.perf_counter()
 
-        log(
-            f"[YOLO] Throughput     : "
-            f"{throughput:.2f} pages/s"
-        )
-
-        # ----------------------------------------------------
-        # RESULT PARSING
-        # ----------------------------------------------------
-
-        log(
-            "[YOLO] Starting result parsing..."
-        )
-
-        parse_start = (
-            time.perf_counter()
-        )
-
-        for page_offset, (
-            image,
-            result,
-        ) in enumerate(
-            zip(
-                batch,
-                results,
-            )
+        for page_offset, (image, result) in enumerate(
+            zip(batch, results)
         ):
+            page_number = batch_start + page_offset + 1
 
-            page_number = (
-                batch_start
-                + page_offset
-                + 1
-            )
-
-            detections = _parse_result(
-                image,
-                result,
-            )
-
-            all_detections.append(
-                detections
-            )
+            detections = _parse_result(image, result)
+            all_detections.append(detections)
 
             log(
-                f"[YOLO] Page "
-                f"{page_number}: "
+                f"[YOLO] Page {page_number}: "
                 f"{len(detections)} visual(s)"
             )
 
-        parse_time = (
-            time.perf_counter()
-            - parse_start
-        )
+        parse_time = time.perf_counter() - parse_start
+        total_parse_time += parse_time
 
-        total_parse_time += (
-            parse_time
-        )
-
+        log(f"[YOLO] Result parsing time: {parse_time:.3f}s")
         log(
-            f"[YOLO] Result parsing time: "
-            f"{parse_time:.3f}s"
-        )
-
-        log(
-            f"[YOLO] BATCH "
-            f"{batch_index}/{total_batches} "
+            f"[YOLO] BATCH {batch_index}/{total_batches} "
             f"COMPLETE"
         )
 
-    # --------------------------------------------------------
-    # SUMMARY
-    # --------------------------------------------------------
-
     total_visuals = sum(
         len(detections)
-        for detections
-        in all_detections
+        for detections in all_detections
     )
 
     avg_inference_per_page = (
-        total_inference_time
-        / len(images)
+        total_inference_time / len(images)
         if images
         else 0
     )
 
     total_throughput = (
-        len(images)
-        / total_inference_time
+        len(images) / total_inference_time
         if total_inference_time > 0
         else 0
     )
@@ -782,42 +547,13 @@ def detect_visuals_batch(
     log("=" * 80)
     log("[YOLO] INFERENCE SUMMARY")
     log("=" * 80)
-
-    log(
-        f"[YOLO] Pages              : "
-        f"{len(images)}"
-    )
-
-    log(
-        f"[YOLO] Batches            : "
-        f"{total_batches}"
-    )
-
-    log(
-        f"[YOLO] Total inference    : "
-        f"{total_inference_time:.3f}s"
-    )
-
-    log(
-        f"[YOLO] Average/page       : "
-        f"{avg_inference_per_page:.3f}s"
-    )
-
-    log(
-        f"[YOLO] Throughput         : "
-        f"{total_throughput:.2f} pages/s"
-    )
-
-    log(
-        f"[YOLO] Total parsing      : "
-        f"{total_parse_time:.3f}s"
-    )
-
-    log(
-        f"[YOLO] Visual regions     : "
-        f"{total_visuals}"
-    )
-
+    log(f"[YOLO] Pages              : {len(images)}")
+    log(f"[YOLO] Batches            : {total_batches}")
+    log(f"[YOLO] Total inference    : {total_inference_time:.3f}s")
+    log(f"[YOLO] Average/page       : {avg_inference_per_page:.3f}s")
+    log(f"[YOLO] Throughput         : {total_throughput:.2f} pages/s")
+    log(f"[YOLO] Total parsing      : {total_parse_time:.3f}s")
+    log(f"[YOLO] Visual regions     : {total_visuals}")
     log("=" * 80)
 
     return all_detections
@@ -827,92 +563,63 @@ def detect_visuals_batch(
 # CROP VISUAL
 # ============================================================
 
-def crop_visual(
-    image,
-    bbox,
-    padding=20,
-):
 
+def crop_visual(image, bbox, padding=20):
+    """
+    Crop a detected figure/table region out of the full page image,
+    with a small pixel padding so borders/axis labels aren't clipped.
+    """
     x1, y1, x2, y2 = bbox
 
-    x1 = max(
-        0,
-        x1 - padding
-    )
+    x1 = max(0, x1 - padding)
+    y1 = max(0, y1 - padding)
+    x2 = min(image.width, x2 + padding)
+    y2 = min(image.height, y2 + padding)
 
-    y1 = max(
-        0,
-        y1 - padding
-    )
-
-    x2 = min(
-        image.width,
-        x2 + padding
-    )
-
-    y2 = min(
-        image.height,
-        y2 + padding
-    )
-
-    return image.crop(
-        (
-            x1,
-            y1,
-            x2,
-            y2,
-        )
-    )
+    return image.crop((x1, y1, x2, y2))
 
 
 # ============================================================
 # SAVE VISUAL
 # ============================================================
 
-def save_visual(
-    image,
-    source,
-    page_number,
-    visual_id,
-):
 
-    doc_stem = Path(
-        source
-    ).stem
-
-    out_dir = (
-        Path(VISUALS_DIR)
-        / doc_stem
-    )
+def save_visual(image, source, page_number, visual_id):
+    """
+    Save a cropped figure/table PNG to
+    VISUALS_DIR/<pdf_stem>/p<page>_<visual_id>.png and return that
+    path — this is the same path stored in Chroma metadata and later
+    resolved by the Streamlit app to display the image next to its
+    citation.
+    """
+    doc_stem = Path(source).stem
+    out_dir = Path(VISUALS_DIR) / doc_stem
 
     out_dir.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    file_path = (
-        out_dir
-        / f"p{page_number}_{visual_id}.png"
-    )
+    file_path = out_dir / f"p{page_number}_{visual_id}.png"
 
     image.save(
         file_path,
         format="PNG",
     )
 
-    return str(
-        file_path
-    )
+    return str(file_path)
 
 
 # ============================================================
 # IMAGE -> BASE64
 # ============================================================
 
-def image_to_base64(
-    image
-):
 
+def image_to_base64(image):
+    """
+    Encode a PIL Image as a base64 PNG string for embedding in the
+    VLM's OpenAI-compatible multimodal chat request.
+    """
     buffer = io.BytesIO()
 
     image.save(
@@ -922,14 +629,13 @@ def image_to_base64(
 
     return base64.b64encode(
         buffer.getvalue()
-    ).decode(
-        "utf-8"
-    )
+    ).decode("utf-8")
 
 
 # ============================================================
 # VLM DESCRIPTION
 # ============================================================
+
 
 def describe_visual(
     image,
@@ -938,62 +644,45 @@ def describe_visual(
     visual_number,
     element_type,
 ):
-
+    """
+    Send one cropped figure/table image to the vLLM-served
+    vision-language model and return a detailed factual text
+    description of it (Part E, Option 1: image-aware ingestion).
+    The prompt explicitly forbids guessing at unreadable content.
+    Returns None on any encoding or inference failure so the caller
+    can skip that visual rather than fail the whole ingestion run.
+    """
     job_name = (
         f"{source} "
         f"| p.{page_number} "
         f"| visual={visual_number}"
     )
 
-    log("")
     log(
-        f"[VLM] START "
-        f"{job_name} "
+        f"[VLM] START {job_name} "
         f"| type={element_type} "
         f"| size={image.width}x{image.height}"
     )
 
-    # --------------------------------------------------------
-    # BASE64 ENCODING
-    # --------------------------------------------------------
-
-    encode_start = (
-        time.perf_counter()
-    )
+    encode_start = time.perf_counter()
 
     try:
-
-        image_base64 = (
-            image_to_base64(
-                image
-            )
-        )
+        image_base64 = image_to_base64(image)
 
     except Exception:
-
         log_exception(
-            f"[VLM ERROR] "
-            f"Image encoding failed "
+            f"[VLM ERROR] Image encoding failed "
             f"| {job_name}"
         )
-
         return None
 
-    encode_time = (
-        time.perf_counter()
-        - encode_start
-    )
+    encode_time = time.perf_counter() - encode_start
 
     log(
-        f"[VLM] Image encoding "
-        f"| {job_name} "
+        f"[VLM] Image encoding | {job_name} "
         f"| time={encode_time:.3f}s "
         f"| base64_chars={len(image_base64)}"
     )
-
-    # --------------------------------------------------------
-    # PROMPT
-    # --------------------------------------------------------
 
     prompt = f"""
 You are analyzing a visual element from a research paper.
@@ -1039,110 +728,56 @@ Return only the description.
         ]
     )
 
-    # --------------------------------------------------------
-    # VLM INFERENCE / REQUEST
-    # --------------------------------------------------------
+    log(f"[VLM] >>> INFERENCE START | {job_name}")
 
-    log(
-        f"[VLM] >>> INFERENCE START "
-        f"| {job_name}"
-    )
-
-    vlm_start = (
-        time.perf_counter()
-    )
+    vlm_start = time.perf_counter()
 
     try:
-
-        response = llm.invoke(
-            [message]
-        )
+        response = llm.invoke([message])
 
     except Exception as e:
-
-        vlm_time = (
-            time.perf_counter()
-            - vlm_start
-        )
+        vlm_time = time.perf_counter() - vlm_start
 
         log(
-            f"[VLM ERROR] "
-            f"| {job_name} "
+            f"[VLM ERROR] | {job_name} "
             f"| inference_time={vlm_time:.3f}s "
             f"| error={repr(e)}"
         )
 
         traceback.print_exc()
-
         return None
 
-    # --------------------------------------------------------
-    # VLM INFERENCE END
-    # --------------------------------------------------------
-
-    vlm_time = (
-        time.perf_counter()
-        - vlm_start
-    )
+    vlm_time = time.perf_counter() - vlm_start
 
     log(
-        f"[VLM] <<< INFERENCE END "
-        f"| {job_name} "
+        f"[VLM] <<< INFERENCE END | {job_name} "
         f"| inference_time={vlm_time:.3f}s"
     )
 
-    # --------------------------------------------------------
-    # RESPONSE PROCESSING
-    # --------------------------------------------------------
-
-    response_start = (
-        time.perf_counter()
-    )
-
+    response_start = time.perf_counter()
     content = response.content
 
-    if isinstance(
-        content,
-        str,
-    ):
-
+    if isinstance(content, str):
         content = content.strip()
-
     else:
+        content = str(content).strip()
 
-        content = str(
-            content
-        ).strip()
-
-    response_processing_time = (
-        time.perf_counter()
-        - response_start
-    )
+    response_processing_time = time.perf_counter() - response_start
 
     log(
-        f"[VLM] Response processing "
-        f"| {job_name} "
+        f"[VLM] Response processing | {job_name} "
         f"| time={response_processing_time:.3f}s "
         f"| chars={len(content)}"
     )
 
-    # --------------------------------------------------------
-    # TOTAL VLM TIME
-    # --------------------------------------------------------
-
-    total_vlm_time = (
-        time.perf_counter()
-        - vlm_start
-    )
+    total_vlm_time = time.perf_counter() - vlm_start
 
     log(
-        f"[VLM] COMPLETE "
-        f"| {job_name} "
+        f"[VLM] COMPLETE | {job_name} "
         f"| total_request_time={total_vlm_time:.3f}s"
     )
 
     if vlm_time > 60:
-
         log(
             f"[VLM WARNING] Slow VLM request "
             f"| {job_name} "
@@ -1156,104 +791,63 @@ Return only the description.
 # TEXT EXTRACTION
 # ============================================================
 
-def extract_text_documents(
-    pdf,
-    source,
-):
 
+def extract_text_documents(pdf, source):
+    """
+    Extract and chunk every page's plain text into LangChain Document
+    objects (content_type="text"), each tagged with source, page
+    number, a stable chunk_id, and a human-readable [source, p. N]
+    citation string.
+    """
     log("=" * 80)
-    log(
-        f"[TEXT] START "
-        f"| {source}"
-    )
-
-    log(
-        f"[TEXT] Pages: {len(pdf)}"
-    )
+    log(f"[TEXT] START | {source}")
+    log(f"[TEXT] Pages: {len(pdf)}")
 
     documents = []
+    extraction_start = time.perf_counter()
 
-    extraction_start = (
-        time.perf_counter()
-    )
-
-    for page_index in range(
-        len(pdf)
-    ):
-
-        page = pdf[
-            page_index
-        ]
-
-        page_number = (
-            page_index + 1
-        )
+    for page_index in range(len(pdf)):
+        page = pdf[page_index]
+        page_number = page_index + 1
 
         log(
-            f"[TEXT] Page "
-            f"{page_number}/{len(pdf)} "
+            f"[TEXT] Page {page_number}/{len(pdf)} "
             f"| extracting..."
         )
 
-        page_start = (
-            time.perf_counter()
-        )
+        page_start = time.perf_counter()
 
         try:
-
-            text = (
-                page
-                .get_text("text")
-                .strip()
-            )
+            text = page.get_text("text").strip()
 
         except Exception:
-
             log_exception(
-                f"[TEXT ERROR] "
-                f"Failed page "
-                f"{page_number}"
+                f"[TEXT ERROR] Failed page {page_number}"
             )
-
             continue
 
-        page_time = (
-            time.perf_counter()
-            - page_start
-        )
+        page_time = time.perf_counter() - page_start
 
         if not text:
-
             log(
-                f"[TEXT] Page "
-                f"{page_number} "
+                f"[TEXT] Page {page_number} "
                 f"| empty "
                 f"| time={page_time:.3f}s"
             )
-
             continue
 
-        chunks = (
-            text_splitter
-            .split_text(text)
-        )
+        chunks = text_splitter.split_text(text)
 
         log(
-            f"[TEXT] Page "
-            f"{page_number} "
+            f"[TEXT] Page {page_number} "
             f"| chars={len(text)} "
             f"| chunks={len(chunks)} "
             f"| time={page_time:.3f}s"
         )
 
-        for chunk_index, chunk in enumerate(
-            chunks
-        ):
-
+        for chunk_index, chunk in enumerate(chunks):
             chunk_id = (
-                f"{source}_p"
-                f"{page_number}_chunk"
-                f"{chunk_index}"
+                f"{source}_p{page_number}_chunk{chunk_index}"
             )
 
             documents.append(
@@ -1265,17 +859,13 @@ def extract_text_documents(
                         "content_type": "text",
                         "chunk_id": chunk_id,
                         "citation": (
-                            f"[{source}, "
-                            f"p. {page_number}]"
+                            f"[{source}, p. {page_number}]"
                         ),
                     },
                 )
             )
 
-    total_time = (
-        time.perf_counter()
-        - extraction_start
-    )
+    total_time = time.perf_counter() - extraction_start
 
     log(
         f"[TEXT] COMPLETE "
@@ -1290,24 +880,21 @@ def extract_text_documents(
 # VISUAL EXTRACTION
 # ============================================================
 
-def extract_visual_documents(
-    pdf,
-    source,
-):
 
+def extract_visual_documents(pdf, source):
+    """
+    Full per-PDF visual pipeline: render every page -> detect
+    figures/tables with DocLayout-YOLO -> crop and save each one ->
+    describe each one via the VLM (in parallel, VLM_MAX_WORKERS at a
+    time) -> return one Document per successfully described visual
+    (content_type="figure"/"table"), citation-tagged the same way as
+    text chunks.
+    """
     log("=" * 80)
-    log(
-        f"[VISUAL] START "
-        f"| {source}"
-    )
+    log(f"[VISUAL] START | {source}")
+    log(f"[VISUAL] Pages: {len(pdf)}")
 
-    log(
-        f"[VISUAL] Pages: {len(pdf)}"
-    )
-
-    visual_total_start = (
-        time.perf_counter()
-    )
+    visual_total_start = time.perf_counter()
 
     # ========================================================
     # STEP 1 — RENDER PAGES
@@ -1318,100 +905,64 @@ def extract_visual_documents(
     log("=" * 60)
 
     page_images = []
+    render_start = time.perf_counter()
 
-    render_start = (
-        time.perf_counter()
-    )
-
-    for i in range(
-        len(pdf)
-    ):
-
-        page_number = (
-            i + 1
-        )
+    for i in range(len(pdf)):
+        page_number = i + 1
 
         log(
-            f"[RENDER] Page "
-            f"{page_number}/{len(pdf)} "
+            f"[RENDER] Page {page_number}/{len(pdf)} "
             f"| START"
         )
 
-        page_start = (
-            time.perf_counter()
-        )
+        page_start = time.perf_counter()
 
         try:
-
             image = render_page(
                 pdf[i],
                 scale=2.0,
             )
-
-            page_images.append(
-                image
-            )
+            page_images.append(image)
 
         except Exception:
-
             log_exception(
-                f"[RENDER ERROR] "
-                f"Page {page_number}"
+                f"[RENDER ERROR] Page {page_number}"
             )
-
             raise
 
-        page_time = (
-            time.perf_counter()
-            - page_start
-        )
+        page_time = time.perf_counter() - page_start
 
         log(
-            f"[RENDER] Page "
-            f"{page_number}/{len(pdf)} "
+            f"[RENDER] Page {page_number}/{len(pdf)} "
             f"| END "
             f"| time={page_time:.3f}s "
             f"| size={image.width}x{image.height}"
         )
 
-    render_time = (
-        time.perf_counter()
-        - render_start
-    )
+    render_time = time.perf_counter() - render_start
 
-    log(
-        f"[RENDER] COMPLETE "
-        f"| pages={len(page_images)} "
-        f"| total_time={render_time:.3f}s "
-        f"| avg/page={render_time / len(page_images):.3f}s"
-        if page_images
-        else
-        "[RENDER] COMPLETE | pages=0"
-    )
+    if page_images:
+        log(
+            f"[RENDER] COMPLETE "
+            f"| pages={len(page_images)} "
+            f"| total_time={render_time:.3f}s "
+            f"| avg/page={render_time / len(page_images):.3f}s"
+        )
+    else:
+        log("[RENDER] COMPLETE | pages=0")
 
     # ========================================================
     # STEP 2 — YOLO
     # ========================================================
 
     log("")
-    log(
-        "[VISUAL] Calling YOLO detection..."
-    )
+    log("[VISUAL] Calling YOLO detection...")
 
-    yolo_start = (
-        time.perf_counter()
-    )
+    yolo_start = time.perf_counter()
 
-    detections_per_page = (
-        detect_visuals_batch(
-            page_images
-        )
-    )
+    detections_per_page = detect_visuals_batch(page_images)
 
-    yolo_total_time = (
-        time.perf_counter()
-        - yolo_start
-    )
+    yolo_total_time = time.perf_counter() - yolo_start
 
     log(
         f"[VISUAL] YOLO COMPLETE "
@@ -1427,59 +978,36 @@ def extract_visual_documents(
     log("=" * 60)
 
     jobs = []
-
     visual_number = 0
-
-    crop_save_start = (
-        time.perf_counter()
-    )
+    crop_save_start = time.perf_counter()
 
     for page_index, detections in enumerate(
         detections_per_page
     ):
-
-        page_number = (
-            page_index + 1
-        )
-
-        page_image = (
-            page_images[page_index]
-        )
+        page_number = page_index + 1
+        page_image = page_images[page_index]
 
         log(
-            f"[VISUAL] Page "
-            f"{page_number} "
+            f"[VISUAL] Page {page_number} "
             f"| detections={len(detections)}"
         )
 
         for detection in detections:
-
             visual_number += 1
 
-            label = (
-                detection["label"]
-            )
-
-            bbox = (
-                detection["bbox"]
-            )
-
-            confidence = (
-                detection["confidence"]
-            )
+            label = detection["label"]
+            bbox = detection["bbox"]
+            confidence = detection["confidence"]
 
             log(
-                f"[VISUAL] Visual "
-                f"{visual_number} "
+                f"[VISUAL] Visual {visual_number} "
                 f"| page={page_number} "
                 f"| type={label} "
                 f"| confidence={confidence:.3f} "
                 f"| bbox={bbox}"
             )
 
-            crop_start = (
-                time.perf_counter()
-            )
+            crop_start = time.perf_counter()
 
             cropped = crop_visual(
                 page_image,
@@ -1487,10 +1015,7 @@ def extract_visual_documents(
                 padding=20,
             )
 
-            crop_time = (
-                time.perf_counter()
-                - crop_start
-            )
+            crop_time = time.perf_counter() - crop_start
 
             log(
                 f"[VISUAL] Crop complete "
@@ -1499,17 +1024,11 @@ def extract_visual_documents(
                 f"| time={crop_time:.3f}s"
             )
 
-            if (
-                cropped.width < 100
-                or cropped.height < 100
-            ):
-
+            if cropped.width < 100 or cropped.height < 100:
                 log(
-                    f"[SKIP] Visual "
-                    f"{visual_number} "
+                    f"[SKIP] Visual {visual_number} "
                     f"| too small"
                 )
-
                 continue
 
             content_type = (
@@ -1519,48 +1038,32 @@ def extract_visual_documents(
             )
 
             visual_id = (
-                f"{content_type}_"
-                f"{visual_number}"
+                f"{content_type}_{visual_number}"
             )
 
-            log(
-                f"[VISUAL] Saving "
-                f"{visual_id}..."
-            )
+            log(f"[VISUAL] Saving {visual_id}...")
 
-            save_start = (
-                time.perf_counter()
-            )
+            save_start = time.perf_counter()
 
             try:
-
-                image_path = (
-                    save_visual(
-                        cropped,
-                        source,
-                        page_number,
-                        visual_id,
-                    )
+                image_path = save_visual(
+                    cropped,
+                    source,
+                    page_number,
+                    visual_id,
                 )
 
             except Exception:
-
                 log_exception(
                     f"[VISUAL ERROR] "
-                    f"Failed saving "
-                    f"{visual_id}"
+                    f"Failed saving {visual_id}"
                 )
-
                 continue
 
-            save_time = (
-                time.perf_counter()
-                - save_start
-            )
+            save_time = time.perf_counter() - save_start
 
             log(
-                f"[VISUAL] Saved "
-                f"{visual_id} "
+                f"[VISUAL] Saved {visual_id} "
                 f"| time={save_time:.3f}s "
                 f"| path={image_path}"
             )
@@ -1577,10 +1080,7 @@ def extract_visual_documents(
                 }
             )
 
-    crop_save_time = (
-        time.perf_counter()
-        - crop_save_start
-    )
+    crop_save_time = time.perf_counter() - crop_save_start
 
     log(
         f"[VISUAL] CROP + SAVE COMPLETE "
@@ -1593,12 +1093,7 @@ def extract_visual_documents(
     # ========================================================
 
     if not jobs:
-
-        log(
-            "[VLM] No visual jobs. "
-            "Skipping VLM."
-        )
-
+        log("[VLM] No visual jobs. Skipping VLM.")
         return []
 
     log("")
@@ -1609,20 +1104,10 @@ def extract_visual_documents(
     log("=" * 80)
 
     documents = []
-
-    vlm_total_start = (
-        time.perf_counter()
-    )
-
-    # --------------------------------------------------------
-    # WORKER
-    # --------------------------------------------------------
+    vlm_total_start = time.perf_counter()
 
     def _describe(job):
-
-        worker_start = (
-            time.perf_counter()
-        )
+        worker_start = time.perf_counter()
 
         log(
             f"[VLM WORKER] START "
@@ -1631,21 +1116,15 @@ def extract_visual_documents(
         )
 
         try:
-
-            description = (
-                describe_visual(
-                    job["cropped"],
-                    source,
-                    job["page_number"],
-                    job["visual_number"],
-                    job["label"],
-                )
+            description = describe_visual(
+                job["cropped"],
+                source,
+                job["page_number"],
+                job["visual_number"],
+                job["label"],
             )
 
-            worker_time = (
-                time.perf_counter()
-                - worker_start
-            )
+            worker_time = time.perf_counter() - worker_start
 
             log(
                 f"[VLM WORKER] END "
@@ -1654,64 +1133,33 @@ def extract_visual_documents(
                 f"| success={description is not None}"
             )
 
-            return (
-                job,
-                description,
-            )
+            return job, description
 
         except Exception:
-
             log_exception(
-                f"[VLM WORKER ERROR] "
-                f"{job['visual_id']}"
+                f"[VLM WORKER ERROR] {job['visual_id']}"
             )
+            return job, None
 
-            return (
-                job,
-                None,
-            )
-
-    # --------------------------------------------------------
-    # EXECUTOR
-    # --------------------------------------------------------
-
-    log(
-        "[VLM] Creating ThreadPoolExecutor..."
-    )
+    log("[VLM] Creating ThreadPoolExecutor...")
 
     with concurrent.futures.ThreadPoolExecutor(
         max_workers=VLM_MAX_WORKERS
     ) as executor:
+        log("[VLM] ThreadPoolExecutor created")
+        log("[VLM] Submitting jobs...")
 
-        log(
-            "[VLM] ThreadPoolExecutor created"
+        results_iterator = executor.map(
+            _describe,
+            jobs,
         )
 
-        log(
-            "[VLM] Submitting jobs..."
-        )
-
-        results_iterator = (
-            executor.map(
-                _describe,
-                jobs,
-            )
-        )
-
-        log(
-            "[VLM] All jobs submitted."
-        )
-
-        log(
-            "[VLM] Waiting for results..."
-        )
+        log("[VLM] All jobs submitted.")
+        log("[VLM] Waiting for results...")
 
         completed = 0
 
-        for job, description in (
-            results_iterator
-        ):
-
+        for job, description in results_iterator:
             completed += 1
 
             log(
@@ -1722,13 +1170,11 @@ def extract_visual_documents(
             )
 
             if not description:
-
                 log(
                     f"[SKIP] No description "
                     f"| visual={job['visual_id']} "
                     f"| image={job['image_path']}"
                 )
-
                 continue
 
             content = f"""
@@ -1763,10 +1209,7 @@ Description:
                 )
             )
 
-    vlm_total_time = (
-        time.perf_counter()
-        - vlm_total_start
-    )
+    vlm_total_time = time.perf_counter() - vlm_total_start
 
     log("")
     log("=" * 80)
@@ -1781,14 +1224,7 @@ Description:
     )
     log("=" * 80)
 
-    # ========================================================
-    # VISUAL TOTAL
-    # ========================================================
-
-    visual_total_time = (
-        time.perf_counter()
-        - visual_total_start
-    )
+    visual_total_time = time.perf_counter() - visual_total_start
 
     log(
         f"[VISUAL] COMPLETE "
@@ -1803,59 +1239,36 @@ Description:
 # PROCESS PDF
 # ============================================================
 
-def process_pdf(
-    pdf_path
-):
 
-    source = os.path.basename(
-        pdf_path
-    )
+def process_pdf(pdf_path):
+    """
+    Process a single PDF end-to-end: text extraction + chunking, then
+    visual extraction + VLM description. Returns the combined list of
+    text and visual Documents ready to be embedded and stored.
+    """
+    source = os.path.basename(pdf_path)
 
     log("")
     log("=" * 80)
-    log(
-        f"[PDF] PROCESSING "
-        f"{source}"
-    )
+    log(f"[PDF] PROCESSING {source}")
     log("=" * 80)
 
-    pdf_total_start = (
-        time.perf_counter()
-    )
+    pdf_total_start = time.perf_counter()
 
-    # --------------------------------------------------------
-    # OPEN PDF
-    # --------------------------------------------------------
+    log(f"[PDF] Opening: {pdf_path}")
 
-    log(
-        f"[PDF] Opening: "
-        f"{pdf_path}"
-    )
-
-    open_start = (
-        time.perf_counter()
-    )
+    open_start = time.perf_counter()
 
     try:
-
-        pdf = pymupdf.open(
-            pdf_path
-        )
+        pdf = pymupdf.open(pdf_path)
 
     except Exception:
-
         log_exception(
-            f"[PDF ERROR] "
-            f"Failed to open "
-            f"{pdf_path}"
+            f"[PDF ERROR] Failed to open {pdf_path}"
         )
-
         raise
 
-    open_time = (
-        time.perf_counter()
-        - open_start
-    )
+    open_time = time.perf_counter() - open_start
 
     log(
         f"[PDF] Opened "
@@ -1864,20 +1277,11 @@ def process_pdf(
     )
 
     try:
+        log("[PDF] Starting text extraction...")
 
-        # ----------------------------------------------------
-        # TEXT
-        # ----------------------------------------------------
-
-        log(
-            "[PDF] Starting text extraction..."
-        )
-
-        text_documents = (
-            extract_text_documents(
-                pdf,
-                source,
-            )
+        text_documents = extract_text_documents(
+            pdf,
+            source,
         )
 
         log(
@@ -1885,19 +1289,11 @@ def process_pdf(
             f"| chunks={len(text_documents)}"
         )
 
-        # ----------------------------------------------------
-        # VISUAL
-        # ----------------------------------------------------
+        log("[PDF] Starting visual extraction...")
 
-        log(
-            "[PDF] Starting visual extraction..."
-        )
-
-        visual_documents = (
-            extract_visual_documents(
-                pdf,
-                source,
-            )
+        visual_documents = extract_visual_documents(
+            pdf,
+            source,
         )
 
         log(
@@ -1906,154 +1302,81 @@ def process_pdf(
         )
 
     finally:
-
-        log(
-            "[PDF] Closing PDF..."
-        )
-
+        log("[PDF] Closing PDF...")
         pdf.close()
+        log("[PDF] PDF closed.")
 
-        log(
-            "[PDF] PDF closed."
-        )
-
-    pdf_total_time = (
-        time.perf_counter()
-        - pdf_total_start
-    )
+    pdf_total_time = time.perf_counter() - pdf_total_start
 
     total_documents = (
-        len(text_documents)
-        + len(visual_documents)
+        len(text_documents) + len(visual_documents)
     )
 
     log("=" * 80)
-    log(
-        f"[PDF] COMPLETE "
-        f"| {source}"
-    )
-
-    log(
-        f"[PDF] Text documents   : "
-        f"{len(text_documents)}"
-    )
-
-    log(
-        f"[PDF] Visual documents : "
-        f"{len(visual_documents)}"
-    )
-
-    log(
-        f"[PDF] Total documents  : "
-        f"{total_documents}"
-    )
-
-    log(
-        f"[PDF] Total time       : "
-        f"{pdf_total_time:.3f}s"
-    )
-
+    log(f"[PDF] COMPLETE | {source}")
+    log(f"[PDF] Text documents   : {len(text_documents)}")
+    log(f"[PDF] Visual documents : {len(visual_documents)}")
+    log(f"[PDF] Total documents  : {total_documents}")
+    log(f"[PDF] Total time       : {pdf_total_time:.3f}s")
     log("=" * 80)
 
-    return (
-        text_documents
-        + visual_documents
-    )
+    return text_documents + visual_documents
 
 
 # ============================================================
 # CHROMA INGESTION
 # ============================================================
 
-def add_to_chroma(
-    documents
-):
 
+def add_to_chroma(documents):
+    """
+    Embed and persist all extracted Documents (text + figure/table
+    descriptions) into the Chroma collection. IDs are deterministic
+    per source/page/chunk (or source/page/visual_id for visuals), so
+    re-running ingestion on the same PDFs upserts rather than
+    duplicates entries.
+    """
     log("")
     log("=" * 80)
     log("[CHROMA] STARTING INGESTION")
-    log(
-        f"[CHROMA] Documents: "
-        f"{len(documents)}"
-    )
+    log(f"[CHROMA] Documents: {len(documents)}")
     log("=" * 80)
 
     if not documents:
-
-        log(
-            "[CHROMA] No documents. "
-            "Nothing to add."
-        )
-
+        log("[CHROMA] No documents. Nothing to add.")
         return
 
-    # --------------------------------------------------------
-    # CREATE IDS
-    # --------------------------------------------------------
+    log("[CHROMA] Generating IDs...")
 
-    log(
-        "[CHROMA] Generating IDs..."
-    )
-
-    id_start = (
-        time.perf_counter()
-    )
-
+    id_start = time.perf_counter()
     ids = []
 
-    for index, document in enumerate(
-        documents
-    ):
+    for index, document in enumerate(documents):
+        metadata = document.metadata
 
-        metadata = (
-            document.metadata
-        )
+        source = metadata.get("source", "unknown")
+        page = metadata.get("page", "unknown")
+        content_type = metadata.get("content_type", "text")
 
-        source = metadata.get(
-            "source",
-            "unknown",
-        )
-
-        page = metadata.get(
-            "page",
-            "unknown",
-        )
-
-        content_type = metadata.get(
-            "content_type",
-            "text",
-        )
-
-        if content_type in (
-            "figure",
-            "table",
-        ):
-
+        if content_type in ("figure", "table"):
             visual_id = metadata.get(
                 "visual_id",
                 str(uuid.uuid4()),
             )
 
             doc_id = (
-                f"{source}_p{page}_"
-                f"{visual_id}"
+                f"{source}_p{page}_{visual_id}"
             )
 
         else:
-
             doc_id = metadata.get(
                 "chunk_id",
                 str(uuid.uuid4()),
             )
 
-        ids.append(
-            doc_id
-        )
+        ids.append(doc_id)
 
-    id_time = (
-        time.perf_counter()
-        - id_start
-    )
+    id_time = time.perf_counter() - id_start
 
     log(
         f"[CHROMA] IDs generated "
@@ -2061,96 +1384,65 @@ def add_to_chroma(
         f"| time={id_time:.3f}s"
     )
 
-    # --------------------------------------------------------
-    # CHROMA / EMBEDDING
-    # --------------------------------------------------------
-
     log("")
-    log(
-        "[CHROMA] >>> add_documents() START"
-    )
-
+    log("[CHROMA] >>> add_documents() START")
     log(
         "[CHROMA] This includes embedding "
         "generation + vector DB insertion."
     )
 
-    chroma_start = (
-        time.perf_counter()
-    )
+    chroma_start = time.perf_counter()
 
     try:
-
         vectorstore.add_documents(
             documents=documents,
             ids=ids,
         )
 
     except Exception:
-
-        chroma_time = (
-            time.perf_counter()
-            - chroma_start
-        )
+        chroma_time = time.perf_counter() - chroma_start
 
         log(
-            f"[CHROMA ERROR] "
-            f"add_documents() failed "
+            f"[CHROMA ERROR] add_documents() failed "
             f"| elapsed={chroma_time:.3f}s"
         )
 
         traceback.print_exc()
-
         raise
 
-    chroma_time = (
-        time.perf_counter()
-        - chroma_start
-    )
+    chroma_time = time.perf_counter() - chroma_start
 
-    log(
-        "[CHROMA] <<< add_documents() END"
-    )
-
-    log(
-        f"[CHROMA] Total time: "
-        f"{chroma_time:.3f}s"
-    )
+    log("[CHROMA] <<< add_documents() END")
+    log(f"[CHROMA] Total time: {chroma_time:.3f}s")
 
     if documents:
-
         log(
             f"[CHROMA] Time/document: "
             f"{chroma_time / len(documents):.3f}s"
         )
 
-    log(
-        "[CHROMA] INGESTION COMPLETE"
-    )
+    log("[CHROMA] INGESTION COMPLETE")
 
 
 # ============================================================
 # MAIN
 # ============================================================
 
-def main():
 
-    main_start = (
-        time.perf_counter()
-    )
+def main():
+    """
+    Ingestion entry point: find every *.pdf in DATA_DIR, run
+    process_pdf() on each, log a text/figure/table summary, and write
+    everything to the persisted Chroma collection.
+    """
+    main_start = time.perf_counter()
 
     log("")
     log("=" * 80)
     log("MAIN START")
     log("=" * 80)
 
-    # --------------------------------------------------------
-    # DATA DIRECTORY
-    # --------------------------------------------------------
-
-    data_path = Path(
-        DATA_DIR
-    )
+    data_path = Path(DATA_DIR)
 
     log(
         f"[MAIN] Data directory: "
@@ -2158,91 +1450,56 @@ def main():
     )
 
     if not data_path.exists():
-
         raise RuntimeError(
-            f"Data directory not found: "
-            f"{DATA_DIR}"
+            f"Data directory not found: {DATA_DIR}"
         )
 
-    # --------------------------------------------------------
-    # FIND PDFS
-    # --------------------------------------------------------
-
-    log(
-        "[MAIN] Searching for PDFs..."
-    )
+    log("[MAIN] Searching for PDFs...")
 
     pdf_files = list(
-        data_path.glob(
-            "*.pdf"
-        )
+        data_path.glob("*.pdf")
     )
 
     log(
-        f"[MAIN] Found "
-        f"{len(pdf_files)} PDF(s)"
+        f"[MAIN] Found {len(pdf_files)} PDF(s)"
     )
 
     if not pdf_files:
-
-        log(
-            "[MAIN] No PDF files found."
-        )
-
+        log("[MAIN] No PDF files found.")
         return
 
     all_documents = []
-
-    # --------------------------------------------------------
-    # PROCESS EACH PDF
-    # --------------------------------------------------------
 
     for file_index, pdf_file in enumerate(
         pdf_files,
         start=1,
     ):
-
         log("")
         log("=" * 80)
         log(
             f"[MAIN] FILE "
             f"{file_index}/{len(pdf_files)}"
         )
-
-        log(
-            f"[MAIN] {pdf_file.name}"
-        )
-
+        log(f"[MAIN] {pdf_file.name}")
         log("=" * 80)
 
-        file_start = (
-            time.perf_counter()
-        )
+        file_start = time.perf_counter()
 
         try:
-
             documents = process_pdf(
                 str(pdf_file)
             )
 
         except Exception:
-
             log_exception(
                 f"[MAIN ERROR] "
-                f"Failed processing "
-                f"{pdf_file.name}"
+                f"Failed processing {pdf_file.name}"
             )
-
             raise
 
-        all_documents.extend(
-            documents
-        )
+        all_documents.extend(documents)
 
-        file_time = (
-            time.perf_counter()
-            - file_start
-        )
+        file_time = time.perf_counter() - file_start
 
         log(
             f"[MAIN] FILE COMPLETE "
@@ -2256,88 +1513,45 @@ def main():
             f"{len(all_documents)}"
         )
 
-    # ========================================================
-    # SUMMARY
-    # ========================================================
-
     text_count = sum(
         1
         for doc in all_documents
-        if doc.metadata.get(
-            "content_type"
-        ) == "text"
+        if doc.metadata.get("content_type") == "text"
     )
 
     figure_count = sum(
         1
         for doc in all_documents
-        if doc.metadata.get(
-            "content_type"
-        ) == "figure"
+        if doc.metadata.get("content_type") == "figure"
     )
 
     table_count = sum(
         1
         for doc in all_documents
-        if doc.metadata.get(
-            "content_type"
-        ) == "table"
+        if doc.metadata.get("content_type") == "table"
     )
 
     log("")
     log("=" * 80)
     log("INGESTION SUMMARY")
     log("=" * 80)
-
-    log(
-        f"Text chunks : {text_count}"
-    )
-
-    log(
-        f"Figures     : {figure_count}"
-    )
-
-    log(
-        f"Tables      : {table_count}"
-    )
-
-    log(
-        f"Total       : {len(all_documents)}"
-    )
-
+    log(f"Text chunks : {text_count}")
+    log(f"Figures     : {figure_count}")
+    log(f"Tables      : {table_count}")
+    log(f"Total       : {len(all_documents)}")
     log("=" * 80)
 
-    # ========================================================
-    # CHROMA
-    # ========================================================
+    log("[MAIN] Starting Chroma ingestion...")
 
-    log(
-        "[MAIN] Starting Chroma ingestion..."
-    )
+    add_to_chroma(all_documents)
 
-    add_to_chroma(
-        all_documents
-    )
-
-    # ========================================================
-    # TOTAL
-    # ========================================================
-
-    total_time = (
-        time.perf_counter()
-        - main_start
-    )
+    total_time = time.perf_counter() - main_start
 
     log("")
     log("=" * 80)
     log("INGESTION COMPLETED")
     log("=" * 80)
-
-    log(
-        f"Total elapsed time: "
-        f"{total_time:.3f}s"
-    )
-
+    log(f"Total elapsed time: {total_time:.3f}s")
     log("=" * 80)
 
 
@@ -2345,34 +1559,20 @@ def main():
 # ENTRY POINT
 # ============================================================
 
-if __name__ == "__main__":
 
-    log(
-        "[BOOT] __main__ entered."
-    )
+if __name__ == "__main__":
+    log("[BOOT] __main__ entered.")
 
     try:
-
         main()
 
     except KeyboardInterrupt:
-
-        log(
-            "[STOP] "
-            "KeyboardInterrupt received."
-        )
+        log("[STOP] KeyboardInterrupt received.")
 
     except Exception:
-
-        log_exception(
-            "[FATAL] "
-            "Application crashed."
-        )
-
+        log_exception("[FATAL] Application crashed.")
         raise
 
     finally:
+        log("[BOOT] Program exiting.")
 
-        log(
-            "[BOOT] Program exiting."
-        )

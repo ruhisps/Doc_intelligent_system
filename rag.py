@@ -1,3 +1,28 @@
+"""
+rag.py
+
+Core RAG (Retrieval-Augmented Generation) module for the research-paper
+Q&A system, and the interactive CLI entry point.
+
+Responsibilities:
+    - Load the persisted Chroma vector store and embedding model.
+    - Hybrid retrieval: dense (Chroma similarity search) + sparse (BM25),
+      combined with Reciprocal Rank Fusion (RRF).
+    - Build multimodal prompts (text context + figure/table images) for
+      the vLLM-served model.
+    - Generate grounded, citation-tagged ([S1], [S2], ...) answers and
+      validate that every citation refers to a real retrieved source.
+    - Citation-legend helpers used both by this file's CLI and by
+      api.py, so citation formatting never drifts between the two.
+
+This module is imported by:
+    - langgraph_rag.py  (agentic graph: router/retrieve/grade/answer/verify)
+    - api.py             (indirectly, via langgraph_rag.py)
+
+Run directly for an interactive terminal Q&A session:
+    python rag.py
+"""
+
 import os
 import re
 import base64
@@ -6,16 +31,9 @@ import mimetypes
 from dotenv import load_dotenv
 from openai import OpenAI
 
-from langchain_huggingface import (
-    HuggingFaceEmbeddings
-)
-
+from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-
-from langchain_community.retrievers import (
-    BM25Retriever
-)
-
+from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
 
 
@@ -25,35 +43,26 @@ from langchain_core.documents import Document
 
 load_dotenv()
 
-
 # ------------------------------------------------------------
 # Chroma
 # ------------------------------------------------------------
 
 CHROMA_DIR = "chroma_db"
-
 COLLECTION_NAME = "research_papers"
-
 
 # ------------------------------------------------------------
 # Embeddings
 # ------------------------------------------------------------
 
-EMBEDDING_MODEL = (
-    "sentence-transformers/all-MiniLM-L6-v2"
-)
-
+EMBEDDING_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 # ------------------------------------------------------------
 # Retrieval
 # ------------------------------------------------------------
 
 TOP_K = 5
-
 DENSE_WEIGHT = 0.7
-
 BM25_WEIGHT = 0.3
-
 
 # ------------------------------------------------------------
 # Image settings
@@ -91,45 +100,31 @@ client = OpenAI(
 # EMBEDDINGS
 # ============================================================
 
-print(
-    "[EMBEDDINGS] Loading model..."
-)
+print("[EMBEDDINGS] Loading model...")
 
 embeddings = HuggingFaceEmbeddings(
-
     model_name=EMBEDDING_MODEL,
-
     model_kwargs={
         "device": "cpu"
     },
-
     encode_kwargs={
         "normalize_embeddings": True
     }
-
 )
 
-print(
-    "[EMBEDDINGS] Model loaded."
-)
+print("[EMBEDDINGS] Model loaded.")
 
 
 # ============================================================
 # CHROMA
 # ============================================================
 
-print(
-    "[CHROMA] Loading vector database..."
-)
+print("[CHROMA] Loading vector database...")
 
 vectorstore = Chroma(
-
     collection_name=COLLECTION_NAME,
-
     persist_directory=CHROMA_DIR,
-
     embedding_function=embeddings
-
 )
 
 print(
@@ -143,48 +138,39 @@ print(
 # ============================================================
 
 def load_documents_from_chroma():
+    """
+    Pull every stored document + metadata back out of the persisted
+    Chroma collection so a fresh BM25Retriever can be built over the
+    exact same corpus that was embedded during ingestion.
+    """
 
     data = vectorstore.get(
-
         include=[
             "documents",
             "metadatas"
         ]
-
     )
 
     documents = []
 
     for text, metadata in zip(
-
         data["documents"],
-
         data["metadatas"]
-
     ):
-
         if not text:
             continue
 
         documents.append(
-
             Document(
-
                 page_content=text,
-
                 metadata=metadata or {}
-
             )
-
         )
 
     return documents
 
 
-documents = (
-    load_documents_from_chroma()
-)
-
+documents = load_documents_from_chroma()
 
 print(
     f"[CHROMA] Loaded "
@@ -197,17 +183,11 @@ print(
 # ============================================================
 
 if documents:
-
-    bm25_retriever = (
-        BM25Retriever.from_documents(
-            documents
-        )
+    bm25_retriever = BM25Retriever.from_documents(
+        documents
     )
-
     bm25_retriever.k = TOP_K
-
 else:
-
     bm25_retriever = None
 
 
@@ -215,18 +195,11 @@ else:
 # DENSE RETRIEVER
 # ============================================================
 
-dense_retriever = (
-
-    vectorstore.as_retriever(
-
-        search_type="similarity",
-
-        search_kwargs={
-            "k": TOP_K
-        }
-
-    )
-
+dense_retriever = vectorstore.as_retriever(
+    search_type="similarity",
+    search_kwargs={
+        "k": TOP_K
+    }
 )
 
 
@@ -234,10 +207,7 @@ dense_retriever = (
 # IMAGE ENCODING
 # ============================================================
 
-def encode_image(
-    image_path
-):
-
+def encode_image(image_path):
     """
     Convert an image file to base64.
 
@@ -246,43 +216,27 @@ def encode_image(
     """
 
     if not image_path:
-
         return None
 
-
-    if not os.path.exists(
-        image_path
-    ):
-
+    if not os.path.exists(image_path):
         print(
             "[IMAGE] File not found:",
             image_path
         )
-
         return None
 
-
     try:
-
-        with open(
-            image_path,
-            "rb"
-        ) as image_file:
-
+        with open(image_path, "rb") as image_file:
             return base64.b64encode(
                 image_file.read()
-            ).decode(
-                "utf-8"
-            )
+            ).decode("utf-8")
 
     except Exception as e:
-
         print(
             "[IMAGE] Error reading:",
             image_path,
             e
         )
-
         return None
 
 
@@ -290,30 +244,18 @@ def encode_image(
 # IMAGE -> DATA URL
 # ============================================================
 
-def image_to_data_url(
-    image_path
-):
+def image_to_data_url(image_path):
+    encoded = encode_image(image_path)
 
-    encoded = encode_image(
+    if not encoded:
+        return None
+
+    mime_type, _ = mimetypes.guess_type(
         image_path
     )
 
-    if not encoded:
-
-        return None
-
-
-    mime_type, _ = (
-        mimetypes.guess_type(
-            image_path
-        )
-    )
-
-
     if not mime_type:
-
         mime_type = "image/png"
-
 
     return (
         f"data:{mime_type};base64,"
@@ -325,27 +267,22 @@ def image_to_data_url(
 # DOCUMENT TYPE
 # ============================================================
 
-def document_type(
-    doc
-):
+def document_type(doc):
+    """
+    Return the display label for a retrieved chunk's content type:
+    "TEXT", "FIGURE", or "TABLE" (used in citation legends and prompts).
+    """
 
-    content_type = (
-        doc.metadata.get(
-            "content_type",
-            "text"
-        )
+    content_type = doc.metadata.get(
+        "content_type",
+        "text"
     )
 
-
     if content_type == "figure":
-
         return "FIGURE"
 
-
     if content_type == "table":
-
         return "TABLE"
-
 
     return "TEXT"
 
@@ -354,12 +291,14 @@ def document_type(
 # DOCUMENT KEY
 # ============================================================
 
-def document_key(
-    doc
-):
+def document_key(doc):
+    """
+    Build a stable string key that identifies a document uniquely
+    across the dense and BM25 result lists, so Reciprocal Rank Fusion
+    can tell when both retrievers surfaced the same chunk.
+    """
 
     metadata = doc.metadata
-
 
     source = metadata.get(
         "source",
@@ -386,7 +325,6 @@ def document_key(
         ""
     )
 
-
     return (
         f"{source}|"
         f"{page}|"
@@ -401,137 +339,99 @@ def document_key(
 # ============================================================
 
 def reciprocal_rank_fusion(
-
     dense_docs,
-
     bm25_docs,
-
     rrf_k=60
-
 ):
+    """
+    Merge dense-retrieval and BM25 result lists into a single ranked
+    list using weighted Reciprocal Rank Fusion:
+
+        score(doc) = DENSE_WEIGHT / (rrf_k + dense_rank)
+                   + BM25_WEIGHT  / (rrf_k + bm25_rank)
+
+    A document that only appears in one list still gets a score (from
+    that list alone); a document that appears in both gets the sum of
+    both contributions, so it naturally rises to the top. Returns the
+    top TOP_K documents by fused score.
+    """
 
     scores = {}
-
     doc_map = {}
-
 
     # --------------------------------------------------------
     # Dense results
     # --------------------------------------------------------
 
     for rank, doc in enumerate(
-
         dense_docs,
-
         start=1
-
     ):
-
-        key = document_key(
-            doc
-        )
-
+        key = document_key(doc)
 
         score = (
-
             DENSE_WEIGHT
-
             *
-
             (
                 1 /
                 (rrf_k + rank)
             )
-
         )
 
-
         scores[key] = (
-
             scores.get(
                 key,
                 0
             )
-
             +
-
             score
-
         )
 
-
         doc_map[key] = doc
-
 
     # --------------------------------------------------------
     # BM25 results
     # --------------------------------------------------------
 
     for rank, doc in enumerate(
-
         bm25_docs,
-
         start=1
-
     ):
-
-        key = document_key(
-            doc
-        )
-
+        key = document_key(doc)
 
         score = (
-
             BM25_WEIGHT
-
             *
-
             (
                 1 /
                 (rrf_k + rank)
             )
-
         )
 
-
         scores[key] = (
-
             scores.get(
                 key,
                 0
             )
-
             +
-
             score
-
         )
 
-
         doc_map[key] = doc
-
 
     # --------------------------------------------------------
     # Sort
     # --------------------------------------------------------
 
     ranked = sorted(
-
         scores.items(),
-
         key=lambda x: x[1],
-
         reverse=True
-
     )
 
-
     return [
-
         doc_map[key]
-
         for key, _ in ranked
-
     ][:TOP_K]
 
 
@@ -539,9 +439,15 @@ def reciprocal_rank_fusion(
 # RETRIEVAL
 # ============================================================
 
-def retrieve(
-    question
-):
+def retrieve(question):
+    """
+    Hybrid retrieval entry point: runs dense similarity search and
+    BM25 lexical search over the same query independently, then fuses
+    both result sets with reciprocal_rank_fusion(). Returns the top
+    TOP_K Document objects (text and/or figure/table description
+    chunks). This is the single retrieval function used by both the
+    plain CLI (this file) and the LangGraph agentic workflow.
+    """
 
     print()
     print(
@@ -549,69 +455,48 @@ def retrieve(
         question
     )
 
-
     # --------------------------------------------------------
     # Dense retrieval
     # --------------------------------------------------------
 
-    dense_docs = (
-
-        dense_retriever.invoke(
-            question
-        )
-
+    dense_docs = dense_retriever.invoke(
+        question
     )
-
 
     print(
         f"[DENSE] "
         f"{len(dense_docs)} results"
     )
 
-
     # --------------------------------------------------------
     # BM25 retrieval
     # --------------------------------------------------------
 
     if bm25_retriever:
-
-        bm25_docs = (
-
-            bm25_retriever.invoke(
-                question
-            )
-
+        bm25_docs = bm25_retriever.invoke(
+            question
         )
-
     else:
-
         bm25_docs = []
-
 
     print(
         f"[BM25] "
         f"{len(bm25_docs)} results"
     )
 
-
     # --------------------------------------------------------
     # Hybrid fusion
     # --------------------------------------------------------
 
     docs = reciprocal_rank_fusion(
-
         dense_docs,
-
         bm25_docs
-
     )
-
 
     print(
         f"[HYBRID] "
         f"{len(docs)} results"
     )
-
 
     return docs
 
@@ -621,114 +506,73 @@ def retrieve(
 # ============================================================
 
 def format_document(
-
     doc,
-
     index
-
 ):
+    """
+    Render one retrieved Document as a numbered [Sx] context block
+    (content type, source, page/visual location, and the chunk text
+    or figure/table description) for inclusion in the LLM prompt.
+    """
 
     metadata = doc.metadata
 
-
     source = metadata.get(
-
         "source",
-
         "Unknown"
-
     )
-
 
     page = metadata.get(
-
         "page",
-
         "Unknown"
-
     )
 
-
-    content_type = document_type(
-        doc
-    )
-
+    content_type = document_type(doc)
 
     citation = metadata.get(
-
         "citation",
-
         "N/A"
-
     )
-
 
     visual_id = metadata.get(
-
         "visual_id",
-
         ""
-
     )
-
 
     chunk_id = metadata.get(
-
         "chunk_id",
-
         ""
-
     )
-
 
     # --------------------------------------------------------
     # Visual
     # --------------------------------------------------------
 
     if content_type in (
-
         "FIGURE",
-
         "TABLE"
-
     ):
-
         location = (
-
             f"{content_type} "
-
             f"{visual_id}, "
-
             f"{source}, "
-
             f"page {page}"
-
         )
-
 
     # --------------------------------------------------------
     # Text
     # --------------------------------------------------------
 
     else:
-
         location = (
-
             f"{source}, "
-
             f"page {page}"
-
         )
 
-
         if chunk_id:
-
             location += (
-
                 f", chunk {chunk_id}"
-
             )
-
 
     return f"""
 [S{index}]
@@ -746,33 +590,25 @@ Content:
 # FORMAT CONTEXT
 # ============================================================
 
-def format_context(
-    docs
-):
+def format_context(docs):
+    """
+    Format a list of retrieved Documents into the full [S1]...[Sn]
+    context block that gets embedded in the generation and grading
+    prompts.
+    """
 
     context_parts = []
 
-
     for i, doc in enumerate(
-
         docs,
-
         start=1
-
     ):
-
         context_parts.append(
-
             format_document(
-
                 doc,
-
                 i
-
             )
-
         )
-
 
     return "\n\n".join(
         context_parts
@@ -784,7 +620,6 @@ def format_context(
 # ============================================================
 
 def build_image_content_blocks(docs):
-
     """
     Builds the list of {"type": "text"/"image_url"} content
     blocks for the figure/table images among the given docs,
@@ -803,7 +638,6 @@ def build_image_content_blocks(docs):
     """
 
     blocks = []
-
     image_count = 0
 
     for i, doc in enumerate(docs, start=1):
@@ -811,17 +645,27 @@ def build_image_content_blocks(docs):
         if image_count >= MAX_IMAGES_PER_QUERY:
             break
 
-        content_type = doc.metadata.get("content_type", "text")
+        content_type = doc.metadata.get(
+            "content_type",
+            "text"
+        )
 
-        if content_type not in ("figure", "table"):
+        if content_type not in (
+            "figure",
+            "table"
+        ):
             continue
 
-        image_path = doc.metadata.get("image_path")
+        image_path = doc.metadata.get(
+            "image_path"
+        )
 
         if not image_path:
             continue
 
-        data_url = image_to_data_url(image_path)
+        data_url = image_to_data_url(
+            image_path
+        )
 
         if not data_url:
             continue
@@ -848,6 +692,16 @@ def build_image_content_blocks(docs):
 
 
 def build_message_content(question, docs):
+    """
+    Assemble the full multimodal user-message content sent to vLLM for
+    answer generation: the citation-rules prompt + text context (built
+    from format_context) followed by any figure/table image blocks
+    (from build_image_content_blocks). The prompt hard-requires a
+    [Sx] citation on every factual sentence and includes an explicit
+    prompt-injection defense (rule 5) instructing the model to treat
+    any instructions embedded in the retrieved context as data, not
+    commands.
+    """
 
     content = []
 
@@ -923,11 +777,15 @@ this for any sentence. Now write your answer to the question.
     # Add retrieved images
     # --------------------------------------------------------
 
-    image_blocks, image_count = build_image_content_blocks(docs)
+    image_blocks, image_count = build_image_content_blocks(
+        docs
+    )
 
     content.extend(image_blocks)
 
-    print(f"[IMAGE] {image_count} visual(s) sent to vLLM.")
+    print(
+        f"[IMAGE] {image_count} visual(s) sent to vLLM."
+    )
 
     return content
 
@@ -937,56 +795,45 @@ this for any sentence. Now write your answer to the question.
 # ============================================================
 
 def validate_citations(
-
     answer,
-
     number_of_sources
-
 ):
+    """
+    Second line of defense against fabricated sources (the first is
+    the prompt itself): requires at least one [Sx]/(Sx) citation tag
+    in the answer, and rejects the answer if any cited index doesn't
+    correspond to an actual retrieved source (1..number_of_sources).
+    Used by the plain CLI path (ask()); the LangGraph API path uses an
+    LLM-based hallucination check in verification_node instead.
+    """
 
     citations = re.findall(
-
         r"[\[\(]S(\d+)[\]\)]",
-
         answer
-
     )
-
 
     # --------------------------------------------------------
     # At least one citation required
     # --------------------------------------------------------
 
     if not citations:
-
         return False
 
-
     valid_ids = {
-
         str(i)
-
         for i in range(
-
             1,
-
             number_of_sources + 1
-
         )
-
     }
-
 
     # --------------------------------------------------------
     # Every citation must exist
     # --------------------------------------------------------
 
     for citation in citations:
-
         if citation not in valid_ids:
-
             return False
-
 
     return True
 
@@ -1027,8 +874,8 @@ def extract_cited_ids(answer):
         {int(x) for x in cited_ids}
     )
 
-def build_citation_legend(docs):
 
+def build_citation_legend(docs):
     """
     Build a lookup of {index: source_details} so the CLI can
     print a full breakdown (source, page, content type, and
@@ -1037,8 +884,10 @@ def build_citation_legend(docs):
 
     legend = {}
 
-    for i, doc in enumerate(docs, start=1):
-
+    for i, doc in enumerate(
+        docs,
+        start=1
+    ):
         metadata = doc.metadata
 
         legend[i] = {
@@ -1054,7 +903,6 @@ def build_citation_legend(docs):
 
 
 def print_citations_used(answer, legend):
-
     """
     Print a full breakdown of every [Sx] tag that actually
     appears in the model's answer: source file, page number,
@@ -1062,7 +910,13 @@ def print_citations_used(answer, legend):
     """
 
     used_ids = sorted(
-        {int(x) for x in re.findall(r"[\[\(]S(\d+)[\]\)]", answer)}
+        {
+            int(x)
+            for x in re.findall(
+                r"[\[\(]S(\d+)[\]\)]",
+                answer
+            )
+        }
     )
 
     if not used_ids:
@@ -1080,16 +934,34 @@ def print_citations_used(answer, legend):
         if not info:
             continue
 
-        print(f"\n[S{sid}] ({info['content_type']})")
-        print(f"  Source : {info['source']}")
-        print(f"  Page   : {info['page']}")
+        print(
+            f"\n[S{sid}] ({info['content_type']})"
+        )
+        print(
+            f"  Source : {info['source']}"
+        )
+        print(
+            f"  Page   : {info['page']}"
+        )
 
-        if info["content_type"] in ("FIGURE", "TABLE"):
-            print(f"  Visual ID : {info['visual_id'] or 'N/A'}")
-            print(f"  Image     : {info['image_path'] or 'N/A'}")
+        if info["content_type"] in (
+            "FIGURE",
+            "TABLE"
+        ):
+            print(
+                f"  Visual ID : "
+                f"{info['visual_id'] or 'N/A'}"
+            )
+            print(
+                f"  Image     : "
+                f"{info['image_path'] or 'N/A'}"
+            )
 
         if info["citation"] and info["citation"] != "N/A":
-            print(f"  Citation  : {info['citation']}")
+            print(
+                f"  Citation  : "
+                f"{info['citation']}"
+            )
 
     print()
     print("-" * 70)
@@ -1105,7 +977,6 @@ def generate_answer(
     question,
     docs,
 ):
-
     """
     Builds the full multimodal message (context + citation
     rules + figure/table images) and calls vLLM once.
@@ -1117,50 +988,32 @@ def generate_answer(
     of the regex-based validate_citations used by rag.py.
     """
 
-    message_content = (
-
-        build_message_content(
-
-            question,
-
-            docs
-
-        )
-
+    message_content = build_message_content(
+        question,
+        docs
     )
 
     print(
-        "[GEMINI] Generating answer..."
+        "[VLLM] Generating answer..."
     )
 
     response = client.chat.completions.create(
-
         model=VLLM_MODEL,
-
         messages=[
-
             {
-
                 "role": "user",
-
                 "content": message_content
-
             }
-
         ],
-
         temperature=0,
-
     )
 
     answer = (
-
         response
         .choices[0]
         .message
         .content
         .strip()
-
     )
 
     print("\n[vLLM RAW ANSWER]")
@@ -1174,10 +1027,7 @@ def generate_answer(
 # ANSWER
 # ============================================================
 
-def ask(
-    question
-):
-
+def ask(question):
     """
     Returns a tuple: (answer_text, docs_used)
 
@@ -1190,22 +1040,14 @@ def ask(
     # Retrieve
     # --------------------------------------------------------
 
-    docs = retrieve(
-        question
-    )
-
+    docs = retrieve(question)
 
     if not docs:
-
         return (
-
             "I don't have enough information "
             "in the provided research papers.",
-
             []
-
         )
-
 
     # --------------------------------------------------------
     # Generate
@@ -1221,45 +1063,29 @@ def ask(
     # --------------------------------------------------------
 
     if (
-
         "I don't have enough information"
-
         in answer
-
     ):
-
         return answer, []
-
 
     # --------------------------------------------------------
     # Citation validation
     # --------------------------------------------------------
 
     if not validate_citations(
-
         answer,
-
         len(docs)
-
     ):
-
         print(
-
             "[WARNING] "
             "Citation validation failed."
-
         )
-
 
         return (
-
             "I don't have enough information "
             "in the provided research papers.",
-
             []
-
         )
-
 
     return answer, docs
 
@@ -1268,47 +1094,33 @@ def ask(
 # DEBUG RETRIEVAL
 # ============================================================
 
-def debug_retrieval(
-    question
-):
+def debug_retrieval(question):
+    """
+    Manual debugging helper (not called by the CLI loop or the API) —
+    run interactively, e.g. `python -c "import rag; rag.debug_retrieval('...')"`,
+    to inspect exactly what retrieve() returns for a query: content
+    type, source, page, citation metadata, and a text preview for
+    every retrieved [Sx].
+    """
 
-    docs = retrieve(
-        question
-    )
-
+    docs = retrieve(question)
 
     print()
-    print(
-        "=" * 70
-    )
-
-    print(
-        "RETRIEVED SOURCES"
-    )
-
-    print(
-        "=" * 70
-    )
-
+    print("=" * 70)
+    print("RETRIEVED SOURCES")
+    print("=" * 70)
 
     for i, doc in enumerate(
-
         docs,
-
         start=1
-
     ):
-
         metadata = doc.metadata
 
-
         print()
-
         print(
             f"[S{i}] "
             f"{document_type(doc)}"
         )
-
 
         print(
             "Source:",
@@ -1317,14 +1129,12 @@ def debug_retrieval(
             )
         )
 
-
         print(
             "Page:",
             metadata.get(
                 "page"
             )
         )
-
 
         print(
             "Citation:",
@@ -1333,14 +1143,12 @@ def debug_retrieval(
             )
         )
 
-
         print(
             "Visual ID:",
             metadata.get(
                 "visual_id"
             )
         )
-
 
         print(
             "Image:",
@@ -1349,11 +1157,7 @@ def debug_retrieval(
             )
         )
 
-
-        print(
-            "-" * 60
-        )
-
+        print("-" * 60)
 
         print(
             doc.page_content[:700]
@@ -1367,9 +1171,7 @@ def debug_retrieval(
 if __name__ == "__main__":
 
     print()
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
 
     print(
         "RESEARCH PAPER MULTIMODAL RAG"
@@ -1383,9 +1185,7 @@ if __name__ == "__main__":
         "Text + Figure + Table Retrieval"
     )
 
-    print(
-        "=" * 70
-    )
+    print("=" * 70)
 
     print()
 
@@ -1397,42 +1197,36 @@ if __name__ == "__main__":
         "Type 'exit' to quit."
     )
 
-
     while True:
 
         question = input(
-
             "\nQuestion: "
-
         ).strip()
 
-
         if question.lower() == "exit":
-
             break
 
-
         if not question:
-
             continue
 
-
-        answer, docs = ask(
-            question
-        )
-
+        answer, docs = ask(question)
 
         print()
         print(
             "Answer:"
         )
 
-        print(
-            answer
-        )
+        print(answer)
 
         if docs:
 
-            legend = build_citation_legend(docs)
+            legend = build_citation_legend(
+                docs
+            )
 
-            print_citations_used(answer, legend)
+            print_citations_used(
+                answer,
+                legend
+            )
+
+

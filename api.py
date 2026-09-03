@@ -1,18 +1,29 @@
 # api.py
+"""
+FastAPI service for the agentic RAG system.
+
+Endpoints:
+    GET  /health  - checks if the API is running
+    POST /ask     - runs the RAG workflow and returns the answer,
+                    citations, and path taken through the graph.
+
+Citation helpers are imported from rag.py so the API uses the same
+citation logic as the CLI.
+"""
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 
-# Import the pre-compiled graph and citation helpers from your existing code
 from langgraph_rag import rag_graph
 from rag import build_citation_legend, extract_cited_ids
 
 app = FastAPI(
     title="Research Paper Multimodal RAG API",
-    description="LangGraph-powered API for retrieving and reasoning over research papers and visuals."
+    description="API for retrieving and reasoning over research papers and visuals."
 )
 
-# --- Pydantic Models ---
+# --- Pydantic models ---
 class AskRequest(BaseModel):
     question: str
 
@@ -36,7 +47,7 @@ def health_check():
 
 @app.post("/ask", response_model=AskResponse)
 def ask_question(request: AskRequest):
-    # Prepare the initial state expected by our LangGraph RAGState
+    # Initial state for the RAG graph
     initial_state = {
         "question": request.question,
         "retry_count": 0,
@@ -46,7 +57,6 @@ def ask_question(request: AskRequest):
     }
 
     try:
-        # Run the LangGraph state machine
         result = rag_graph.invoke(initial_state)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Graph execution failed: {str(e)}")
@@ -54,13 +64,10 @@ def ask_question(request: AskRequest):
     answer = result.get("final_answer", "")
     docs = result.get("documents_used", [])
 
-    # Reconstruct readable citations
+    # Build citations from the documents used by the graph
     legend = build_citation_legend(docs)
 
-    # We only care about citations the model *actually used* in its final
-    # response. extract_cited_ids is imported from rag.py so this parsing
-    # logic stays identical to what the CLI uses — one implementation,
-    # not a second regex that can drift out of sync.
+    # Only include citations that appear in the final answer
     used_ids = extract_cited_ids(answer)
 
     citations = []
@@ -78,8 +85,7 @@ def ask_question(request: AskRequest):
                 )
             )
 
-    # Filter state variables to surface the agent's internal path cleanly
-    # (Exclude bulky Document objects and the massive answer texts)
+    # Keep only the useful state information for debugging
     path_taken = {
         key: value for key, value in result.items()
         if key not in ["documents", "documents_used", "answer", "final_answer"]

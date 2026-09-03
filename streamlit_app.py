@@ -1,4 +1,12 @@
 # streamlit_app.py
+"""
+Minimal Streamlit chat UI (bonus) sitting in front of the FastAPI
+service. Sends questions to RAG_API_URL/ask, renders the grounded
+answer, a card per citation (with the source figure/table image shown
+inline when one exists), and an expandable view of the LangGraph
+path_taken so the agent's routing/retry/verification decisions are
+visible without reading logs.
+"""
 
 import os
 import html
@@ -350,46 +358,21 @@ def display_citation(citation, index):
     citation_text_safe = safe_text(citation_text)
 
     st.markdown(
-        f"""
-        <div class="citation-card">
-
-            <div class="citation-title">
-                [S{index}] {content_type_safe}
-            </div>
-
-            <div class="citation-meta">
-
-                <span class="citation-label">
-                    Source:
-                </span>
-                {source_safe}
-                <br>
-
-                <span class="citation-label">
-                    Page:
-                </span>
-                {page_safe}
-                <br>
-
-                <span class="citation-label">
-                    Citation:
-                </span>
-                {citation_text_safe}
-
-            </div>
-        </div>
-        """,
+        f"""<div class="citation-card">
+<div class="citation-title">[S{index}] {content_type_safe}</div>
+<div class="citation-meta">
+<span class="citation-label">Source:</span> {source_safe}<br>
+<span class="citation-label">Page:</span> {page_safe}<br>
+<span class="citation-label">Citation:</span> {citation_text_safe}
+</div>
+</div>""",
         unsafe_allow_html=True,
     )
 
     if visual_id:
 
         st.markdown(
-            f"""
-            <div class="visual-label">
-                Visual: <b>{visual_id_safe}</b>
-            </div>
-            """,
+            f"""<div class="visual-label">Visual: <b>{visual_id_safe}</b></div>""",
             unsafe_allow_html=True,
         )
 
@@ -454,20 +437,10 @@ def display_path_taken(path_taken):
 # ============================================================
 
 st.markdown(
-    """
-    <div class="app-header">
-
-        <div class="app-title">
-            📚 Research Paper Multimodal RAG
-        </div>
-
-        <div class="app-subtitle">
-            Hybrid retrieval with Chroma + BM25,
-            multimodal figures/tables, and vLLM
-        </div>
-
-    </div>
-    """,
+    """<div class="app-header">
+<div class="app-title">📚 Research Paper Multimodal RAG</div>
+<div class="app-subtitle">Hybrid retrieval with Chroma + BM25, multimodal figures/tables, and vLLM</div>
+</div>""",
     unsafe_allow_html=True,
 )
 
@@ -679,15 +652,9 @@ if ask_clicked:
     )
 
     st.markdown(
-        f"""
-        <div class="answer-card">
-
-            <div class="answer-title">
-                Research Answer
-            </div>
-
-        </div>
-        """,
+        f"""<div class="answer-card">
+<div class="answer-title">Research Answer</div>
+</div>""",
         unsafe_allow_html=True,
     )
 

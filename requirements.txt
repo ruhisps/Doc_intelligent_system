@@ -1,3 +1,4 @@
+# --- API / web framework ---
 fastapi
 uvicorn[standard]
 pydantic
@@ -20,12 +21,12 @@ openai
 sentence-transformers
 rank_bm25
 
-# --- PDF parsing + layout/figure/table extraction (ingest.py) ---
+# --- PDF parsing + layout/figure/table extraction (ingestion.py) ---
 pymupdf
 doclayout-yolo
+opencv-python-headless
 pillow
 
+# --- Bonus: Streamlit chat UI ---
 streamlit
 requests
-
-

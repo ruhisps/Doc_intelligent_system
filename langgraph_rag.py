@@ -1,7 +1,38 @@
+"""
+langgraph_rag.py
+
+Agentic workflow (Part C) built with LangGraph. Wraps the retrieval
+and generation primitives from rag.py in a small state machine:
+
+    START -> router -> [retrieve -> relevance -> (answer | rewrite | fallback)]
+                     -> general (chit-chat)
+                     -> fallback (out-of-scope)
+
+    retrieve -> relevance -> answer -> verify -> finish (success)
+                       -> rewrite -> retrieve  (up to MAX_RETRIES retries)
+                       -> fallback              (no relevant chunks found)
+                verify -> fallback                (hallucination check failed)
+
+Node responsibilities:
+    router        - classify the query: RESEARCH_PAPER / GENERAL / OUT_OF_SCOPE
+    retrieve      - hybrid retrieval via rag.retrieve()
+    relevance     - LLM-graded check: do the retrieved chunks/images
+                     actually answer the question?
+    rewrite       - rewrite the query for a better retry (max 2 retries)
+    answer        - generate a grounded, citation-tagged answer
+    verify        - LLM-graded hallucination check against the context
+    general       - answer simple chit-chat without touching the corpus
+    fallback      - honest "not found in the corpus" response
+    finish         - package the verified answer + documents used
+
+This graph (rag_graph, compiled below) is what api.py invokes for
+every /ask request, so path_taken in the API response reflects exactly
+which of these nodes ran.
+"""
+
 from typing import TypedDict, List
 
 from langchain_core.documents import Document
-
 from langgraph.graph import StateGraph, START, END
 
 # ============================================================
@@ -39,38 +70,26 @@ from rag import (
     build_image_content_blocks,
 )
 
-
 # ============================================================
 # Configuration
 # ============================================================
 
 MAX_RETRIES = 2
 
-
 # ============================================================
 # State
 # ============================================================
 
 class RAGState(TypedDict, total=False):
-
     question: str
-
     rewritten_query: str
-
     documents: List[Document]
-
     retry_count: int
-
     route: str
-
     relevant: bool
-
     answer: str
-
     verified: bool
-
     final_answer: str
-
     documents_used: List[Document]
 
 
@@ -94,7 +113,6 @@ def call_llm(
     user_prompt: str,
     temperature: float = 0,
 ) -> str:
-
     """
     Single-turn chat completion against the vLLM
     OpenAI-compatible endpoint.
@@ -112,20 +130,14 @@ def call_llm(
     )
 
     response = client.chat.completions.create(
-
         model=VLLM_MODEL,
-
         messages=[
-
             {
                 "role": "user",
                 "content": combined_prompt,
             },
-
         ],
-
         temperature=temperature,
-
     )
 
     return (
@@ -142,7 +154,6 @@ def call_llm_multimodal(
     image_blocks: list,
     temperature: float = 0,
 ) -> str:
-
     """
     Same as call_llm, but attaches figure/table image content
     blocks (from build_image_content_blocks) alongside the text
@@ -166,20 +177,14 @@ def call_llm_multimodal(
     content.extend(image_blocks)
 
     response = client.chat.completions.create(
-
         model=VLLM_MODEL,
-
         messages=[
-
             {
                 "role": "user",
                 "content": content,
             },
-
         ],
-
         temperature=temperature,
-
     )
 
     return (
@@ -198,6 +203,11 @@ def call_llm_multimodal(
 def router_node(
     state: RAGState
 ):
+    """
+    Classify the incoming question into RESEARCH_PAPER / GENERAL /
+    OUT_OF_SCOPE so the graph can route it to the corpus-grounded
+    path, the plain chit-chat path, or the honest fallback path.
+    """
 
     question = state["question"]
 
@@ -261,20 +271,13 @@ OUT_OF_SCOPE
     ).upper()
 
     if "RESEARCH_PAPER" in result:
-
         route = "RESEARCH_PAPER"
-
     elif "OUT_OF_SCOPE" in result:
-
         route = "OUT_OF_SCOPE"
-
     else:
-
         route = "GENERAL"
 
-    print(
-        f"[ROUTER] {route}"
-    )
+    print(f"[ROUTER] {route}")
 
     return {
         "route": route
@@ -288,15 +291,14 @@ OUT_OF_SCOPE
 def router_decision(
     state: RAGState
 ):
+    """Conditional-edge function: map router_node's classification to the next node name."""
 
     route = state["route"]
 
     if route == "RESEARCH_PAPER":
-
         return "retrieve"
 
     if route == "GENERAL":
-
         return "general"
 
     return "fallback"
@@ -309,6 +311,11 @@ def router_decision(
 def retrieval_node(
     state: RAGState
 ):
+    """
+    Run hybrid retrieval (rag.retrieve()) using the rewritten query if
+    a previous rewrite_node pass produced one, otherwise the original
+    question.
+    """
 
     question = state["question"]
 
@@ -322,13 +329,9 @@ def retrieval_node(
         question
     )
 
-    print(
-        f"\n[RETRIEVAL] {query}"
-    )
+    print(f"\n[RETRIEVAL] {query}")
 
-    documents = retrieve(
-        query
-    )
+    documents = retrieve(query)
 
     print(
         f"[RETRIEVAL] "
@@ -348,6 +351,12 @@ def retrieval_node(
 def relevance_node(
     state: RAGState
 ):
+    """
+    LLM-graded relevance check: RELEVANT / NOT_RELEVANT, based on the
+    retrieved text and any attached figure/table images (not text
+    alone) — so a chunk whose caption is thin but whose image actually
+    answers the question isn't wrongly discarded.
+    """
 
     question = state["question"]
 
@@ -357,18 +366,13 @@ def relevance_node(
     )
 
     if not documents:
-
         return {
             "relevant": False
         }
 
-    context = format_context(
-        documents
-    )
+    context = format_context(documents)
 
-    image_blocks, _ = build_image_content_blocks(
-        documents
-    )
+    image_blocks, _ = build_image_content_blocks(documents)
 
     system_prompt = """
 You are a strict relevance grader for
@@ -414,13 +418,9 @@ Retrieved research-paper chunks:
         image_blocks=image_blocks,
     ).upper()
 
-    relevant = (
-        result == "RELEVANT"
-    )
+    relevant = result == "RELEVANT"
 
-    print(
-        f"[RELEVANCE] {result}"
-    )
+    print(f"[RELEVANCE] {result}")
 
     return {
         "relevant": relevant
@@ -434,6 +434,11 @@ Retrieved research-paper chunks:
 def relevance_decision(
     state: RAGState
 ):
+    """
+    Conditional-edge function: RELEVANT -> answer; NOT_RELEVANT with
+    retries left -> rewrite; NOT_RELEVANT with retries exhausted ->
+    fallback.
+    """
 
     relevant = state.get(
         "relevant",
@@ -446,11 +451,9 @@ def relevance_decision(
     )
 
     if relevant:
-
         return "answer"
 
     if retry_count < MAX_RETRIES:
-
         return "rewrite"
 
     return "fallback"
@@ -463,6 +466,13 @@ def relevance_decision(
 def rewrite_node(
     state: RAGState
 ):
+    """
+    Rewrite the search query when the previous retrieval round wasn't
+    relevant enough — keeps the original intent but pulls in technical
+    terms (methods, datasets, metrics) likely to improve recall on
+    retry. Increments retry_count, which relevance_decision checks
+    against MAX_RETRIES.
+    """
 
     question = state["question"]
 
@@ -511,13 +521,10 @@ Previous query:
         user_prompt=user_prompt,
     )
 
-    print(
-        f"[REWRITE] {rewritten_query}"
-    )
+    print(f"[REWRITE] {rewritten_query}")
 
     return {
         "rewritten_query": rewritten_query,
-
         "retry_count": retry_count + 1
     }
 
@@ -529,7 +536,6 @@ Previous query:
 def answer_node(
     state: RAGState
 ):
-
     """
     Delegates to rag.py's generate_answer(), which builds the
     full multimodal message (context + citation rules + any
@@ -564,6 +570,14 @@ def answer_node(
 def verification_node(
     state: RAGState
 ):
+    """
+    Self-verification / hallucination check (Part C): re-checks the
+    generated answer's claims, citations, and any figure/table
+    references against the actual retrieved context and images — not
+    just the caption text — and returns SUPPORTED/UNSUPPORTED. A
+    single unsupported factual claim fails verification, routing the
+    graph to fallback_node instead of returning an ungrounded answer.
+    """
 
     question = state["question"]
 
@@ -571,13 +585,9 @@ def verification_node(
 
     documents = state["documents"]
 
-    context = format_context(
-        documents
-    )
+    context = format_context(documents)
 
-    image_blocks, _ = build_image_content_blocks(
-        documents
-    )
+    image_blocks, _ = build_image_content_blocks(documents)
 
     system_prompt = """
 You are a strict hallucination checker
@@ -648,13 +658,9 @@ Generated answer:
         image_blocks=image_blocks,
     ).upper()
 
-    verified = (
-        result == "SUPPORTED"
-    )
+    verified = result == "SUPPORTED"
 
-    print(
-        f"[VERIFICATION] {result}"
-    )
+    print(f"[VERIFICATION] {result}")
 
     return {
         "verified": verified
@@ -668,12 +674,12 @@ Generated answer:
 def verification_decision(
     state: RAGState
 ):
+    """Conditional-edge function: SUPPORTED -> finish; UNSUPPORTED -> fallback."""
 
     if state.get(
         "verified",
         False
     ):
-
         return "finish"
 
     return "fallback"
@@ -686,6 +692,11 @@ def verification_decision(
 def general_node(
     state: RAGState
 ):
+    """
+    Answer simple chit-chat questions (router classified GENERAL)
+    directly, without touching the document corpus, and without
+    claiming the answer came from the research papers.
+    """
 
     question = state["question"]
 
@@ -717,10 +728,15 @@ the research-paper corpus.
 def fallback_node(
     state: RAGState
 ):
+    """
+    Honest fallback (Part C requirement): returned whenever the router
+    marks a query OUT_OF_SCOPE, retrieval/relevance never finds
+    anything usable after retries, or verification rejects the
+    generated answer. Never fabricates an answer.
+    """
 
     return {
-        "final_answer":
-            FALLBACK_MESSAGE
+        "final_answer": FALLBACK_MESSAGE
     }
 
 
@@ -731,18 +747,21 @@ def fallback_node(
 def finish_node(
     state: RAGState
 ):
+    """
+    Terminal node for the successful, verified research-paper path.
+    Packages the answer and the documents it was grounded in so the
+    caller can build a citation legend.
+    """
 
     return {
-        "final_answer":
-            state["answer"],
+        "final_answer": state["answer"],
 
         # Carried through so the caller (CLI or otherwise) can
         # build a citation legend for whichever [Sx] tags show
         # up in the final answer. Only set on this successful,
         # verified path — general/fallback answers have no
         # grounded documents to cite.
-        "documents_used":
-            state["documents"],
+        "documents_used": state["documents"],
     }
 
 
@@ -750,9 +769,7 @@ def finish_node(
 # Build Graph
 # ============================================================
 
-builder = StateGraph(
-    RAGState
-)
+builder = StateGraph(RAGState)
 
 
 # ============================================================
@@ -814,13 +831,9 @@ builder.add_edge(
     "router"
 )
 
-
 builder.add_conditional_edges(
-
     "router",
-
     router_decision,
-
     {
         "retrieve": "retrieve",
         "general": "general",
@@ -828,19 +841,14 @@ builder.add_conditional_edges(
     }
 )
 
-
 builder.add_edge(
     "retrieve",
     "relevance"
 )
 
-
 builder.add_conditional_edges(
-
     "relevance",
-
     relevance_decision,
-
     {
         "answer": "answer",
         "rewrite": "rewrite",
@@ -848,43 +856,34 @@ builder.add_conditional_edges(
     }
 )
 
-
 builder.add_edge(
     "rewrite",
     "retrieve"
 )
-
 
 builder.add_edge(
     "answer",
     "verify"
 )
 
-
 builder.add_conditional_edges(
-
     "verify",
-
     verification_decision,
-
     {
         "finish": "finish",
         "fallback": "fallback",
     }
 )
 
-
 builder.add_edge(
     "general",
     END
 )
 
-
 builder.add_edge(
     "fallback",
     END
 )
-
 
 builder.add_edge(
     "finish",
@@ -906,7 +905,6 @@ rag_graph = builder.compile()
 def ask(
     question: str
 ):
-
     """
     Returns a tuple: (final_answer, documents_used)
 
@@ -917,22 +915,14 @@ def ask(
     """
 
     initial_state = {
-
         "question": question,
-
         "retry_count": 0,
-
         "documents": [],
-
         "relevant": False,
-
         "verified": False,
-
     }
 
-    result = rag_graph.invoke(
-        initial_state
-    )
+    result = rag_graph.invoke(initial_state)
 
     return (
         result["final_answer"],
@@ -945,7 +935,6 @@ def ask(
 # ============================================================
 
 if __name__ == "__main__":
-
     print("=" * 65)
 
     print(
@@ -968,22 +957,17 @@ if __name__ == "__main__":
     )
 
     while True:
-
         question = input(
             "\nQuestion: "
         ).strip()
 
         if question.lower() == "exit":
-
             break
 
         if not question:
-
             continue
 
-        answer, docs = ask(
-            question
-        )
+        answer, docs = ask(question)
 
         print(
             "\nFinal Answer:"
@@ -992,7 +976,7 @@ if __name__ == "__main__":
         print(answer)
 
         if docs:
-
             legend = build_citation_legend(docs)
-
             print_citations_used(answer, legend)
+
+
