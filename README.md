@@ -301,3 +301,11 @@ Concurrency  Req/s  Tok/s  TTFT p50  TTFT p95  Lat p50  Lat p95  Errors
 - Stream `/ask` responses (SSE) so the UI can show the answer as it's generated rather than waiting for verification to finish.
 - Allow more than one image per query when multiple distinct visuals are relevant, with a token-budget-aware cap instead of a fixed count of 1.
 - Add the evaluation harness (RAGAS / LLM-as-judge) to get a quantitative faithfulness/relevance score instead of relying on spot-checking answers manually.
+
+
+## commands
+sudo docker compose build
+sudo docker compose up vllm
+sudo docker compose --profile ingest run --rm ingest
+sudo docker compose up -d rag-api
+sudo docker compose up -d streamlit

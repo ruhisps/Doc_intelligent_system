@@ -1,0 +1,47 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Generated / local data
+data/
+chroma_db/
+extracted_visuals/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# ML model/cache files
+.cache/
+huggingface_cache/
+*.pt
+*.bin
+*.safetensors
+*.onnx
+
+# Benchmark output
+benchmark_results.json
+benchmark_results.md
+
+# Streamlit secrets
+.streamlit/secrets.toml
+
+# Logs
+*.log
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
