@@ -351,6 +351,14 @@ def retrieval_node(
         f"{len(documents)} chunks retrieved"
     )
 
+    # --- TEMP DEBUG: show what was actually retrieved ---
+    for i, doc in enumerate(documents):
+        src = doc.metadata.get("source", "?")
+        page = doc.metadata.get("page", "?")
+        preview = doc.page_content[:150].replace("\n", " ")
+        print(f"[RETRIEVAL DEBUG] #{i} source={src} page={page} preview={preview!r}")
+    # --- END TEMP DEBUG ---
+
     return {
         "documents": documents,
         "retry_count": retry_count,
